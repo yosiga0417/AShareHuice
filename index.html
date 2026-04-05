@@ -1,0 +1,1043 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>A股自设指数净值回测工具</title>
+  <script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
+  <style>
+    :root {
+      --bg: #f3f6fb;
+      --panel: #ffffff;
+      --text: #1e293b;
+      --subtle: #64748b;
+      --primary: #0057b8;
+      --primary-soft: #e7f0ff;
+      --danger: #b91c1c;
+      --success: #0f766e;
+      --border: #dbe4ef;
+      --shadow: 0 10px 24px rgba(15, 23, 42, 0.08);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      font-family: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+      color: var(--text);
+      background:
+        radial-gradient(circle at 10% 10%, #dbeafe 0%, rgba(219, 234, 254, 0) 35%),
+        radial-gradient(circle at 90% 0%, #dbeafe 0%, rgba(219, 234, 254, 0) 30%),
+        var(--bg);
+    }
+
+    .app {
+      max-width: 1300px;
+      margin: 0 auto;
+      padding: 20px 14px 28px;
+    }
+
+    .hero {
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      padding: 20px;
+      background:
+        linear-gradient(125deg, rgba(0, 87, 184, 0.12), rgba(15, 118, 110, 0.08)),
+        var(--panel);
+      box-shadow: var(--shadow);
+      margin-bottom: 14px;
+    }
+
+    h1 {
+      margin: 0 0 8px;
+      font-size: 26px;
+      letter-spacing: 0.2px;
+    }
+
+    .hero p {
+      margin: 0;
+      color: var(--subtle);
+      font-size: 14px;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: 1.2fr 1fr;
+      gap: 14px;
+      align-items: start;
+    }
+
+    @media (max-width: 1080px) {
+      .grid {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      box-shadow: var(--shadow);
+      padding: 14px;
+    }
+
+    .panel h2 {
+      margin: 0 0 10px;
+      font-size: 18px;
+    }
+
+    .hint {
+      color: var(--subtle);
+      font-size: 12px;
+      margin-top: 4px;
+      line-height: 1.5;
+    }
+
+    .row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-bottom: 8px;
+      align-items: center;
+    }
+
+    label {
+      font-size: 12px;
+      color: var(--subtle);
+      min-width: 74px;
+    }
+
+    input,
+    select,
+    textarea,
+    button {
+      font: inherit;
+    }
+
+    input[type="text"],
+    input[type="date"],
+    input[type="number"],
+    select,
+    textarea {
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 8px 10px;
+      font-size: 14px;
+      color: var(--text);
+      background: #fff;
+    }
+
+    input[type="text"],
+    textarea {
+      width: 100%;
+    }
+
+    textarea {
+      min-height: 68px;
+      resize: vertical;
+    }
+
+    button {
+      border: 0;
+      border-radius: 10px;
+      padding: 8px 12px;
+      background: var(--primary);
+      color: #fff;
+      cursor: pointer;
+      font-size: 13px;
+      transition: transform 120ms ease, opacity 120ms ease;
+    }
+
+    button:hover {
+      transform: translateY(-1px);
+      opacity: 0.92;
+    }
+
+    button.secondary {
+      background: #334155;
+    }
+
+    button.light {
+      background: var(--primary-soft);
+      color: #0f172a;
+      border: 1px solid #bfdbfe;
+    }
+
+    button.danger {
+      background: #fee2e2;
+      color: var(--danger);
+      border: 1px solid #fecaca;
+    }
+
+    button:disabled {
+      cursor: not-allowed;
+      opacity: 0.55;
+      transform: none;
+    }
+
+    .table-wrap {
+      overflow: auto;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      max-height: 280px;
+    }
+
+    table {
+      border-collapse: collapse;
+      width: 100%;
+      min-width: 420px;
+      font-size: 13px;
+    }
+
+    th,
+    td {
+      border-bottom: 1px solid #edf2f7;
+      padding: 7px 8px;
+      text-align: left;
+      vertical-align: middle;
+    }
+
+    th {
+      background: #f8fafc;
+      font-weight: 600;
+    }
+
+    .plan-card {
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 10px;
+      background: #fdfefe;
+      margin-bottom: 10px;
+    }
+
+    .plan-header {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 8px;
+    }
+
+    .plan-title {
+      font-size: 14px;
+      font-weight: 600;
+    }
+
+    .sum-tag {
+      font-size: 12px;
+      padding: 4px 8px;
+      border-radius: 999px;
+      background: #ecfeff;
+      color: #0f766e;
+      border: 1px solid #99f6e4;
+    }
+
+    .sum-tag.warn {
+      background: #fff7ed;
+      color: #c2410c;
+      border-color: #fed7aa;
+    }
+
+    .metrics {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+      gap: 8px;
+      margin-top: 10px;
+    }
+
+    .metric {
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 10px;
+      background: #f8fafc;
+    }
+
+    .metric .name {
+      font-size: 12px;
+      color: var(--subtle);
+      margin-bottom: 5px;
+    }
+
+    .metric .value {
+      font-size: 20px;
+      font-weight: 600;
+      letter-spacing: 0.2px;
+    }
+
+    #navChart {
+      height: 360px;
+      width: 100%;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      margin-top: 10px;
+      background: #fff;
+    }
+
+    #statusBar {
+      margin-top: 6px;
+      font-size: 12px;
+      color: var(--subtle);
+      white-space: pre-wrap;
+      line-height: 1.5;
+    }
+
+    .warning-box {
+      margin-top: 8px;
+      border: 1px solid #fde68a;
+      border-radius: 10px;
+      background: #fffbeb;
+      padding: 8px 10px;
+      color: #92400e;
+      font-size: 12px;
+      display: none;
+      line-height: 1.5;
+    }
+
+    .report {
+      margin-top: 10px;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: #f8fafc;
+      padding: 10px;
+      font-size: 13px;
+      line-height: 1.6;
+      white-space: pre-wrap;
+    }
+
+    .muted {
+      color: var(--subtle);
+      font-size: 12px;
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <div class="hero">
+      <h1>A股自设指数净值回测工具</h1>
+      <p>支持 Excel 成分股导入、6位代码零填充、调仓计划管理、净值回测与指标分析（数据源：AKShare）。</p>
+    </div>
+
+    <div class="grid">
+      <div class="panel">
+        <h2>1. 成分股导入与调仓计划</h2>
+
+        <div class="row">
+          <label for="backendUrl">后端地址</label>
+          <input id="backendUrl" type="text" value="http://127.0.0.1:8000" />
+        </div>
+
+        <div class="row">
+          <label for="fileInput">导入文件</label>
+          <input id="fileInput" type="file" accept=".xls,.xlsx" />
+          <button id="parseFileBtn">解析Excel</button>
+        </div>
+        <div class="row">
+          <label for="targetPlanSelect">目标调仓计划</label>
+          <select id="targetPlanSelect"></select>
+          <button id="applyPreviewBtn" class="secondary" disabled>应用解析结果</button>
+        </div>
+        <div class="hint" id="importSummary">未导入文件。解析时会强制保留6位股票代码（例如 002879）。</div>
+
+        <div class="table-wrap" style="margin-top:8px;">
+          <table>
+            <thead>
+              <tr>
+                <th style="width:100px;">代码</th>
+                <th>名称</th>
+                <th style="width:100px;">权重(%)</th>
+              </tr>
+            </thead>
+            <tbody id="previewTableBody">
+              <tr><td colspan="3" class="muted">解析结果将在这里预览</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-top:14px;">
+          <h2 style="margin:0; font-size:16px;">调仓计划列表</h2>
+          <button id="addPlanBtn" class="light">新增调仓计划（复制上一条）</button>
+        </div>
+        <div id="plansContainer" style="margin-top:8px;"></div>
+      </div>
+
+      <div class="panel">
+        <h2>2. 回测参数与结果</h2>
+        <div class="row">
+          <label for="startDate">开始日期</label>
+          <input id="startDate" type="date" />
+          <label for="endDate">结束日期</label>
+          <input id="endDate" type="date" />
+        </div>
+        <div class="row">
+          <label for="rebalanceMode">调仓频率</label>
+          <select id="rebalanceMode">
+            <option value="none">仅按调仓计划生效日</option>
+            <option value="monthly" selected>按月再平衡</option>
+            <option value="quarterly">按季度再平衡</option>
+            <option value="custom">自定义日期再平衡</option>
+          </select>
+        </div>
+        <div class="row" id="customDatesRow" style="display:none;">
+          <label for="customDates">自定义日期</label>
+          <textarea id="customDates" placeholder="每行一个日期，如：2024-03-15"></textarea>
+        </div>
+        <div class="row">
+          <label for="riskFreeRate">无风险利率</label>
+          <input id="riskFreeRate" type="number" min="0" step="0.001" value="0.02" />
+          <button id="runBacktestBtn">执行回测</button>
+        </div>
+
+        <div class="hint">
+          缺失数据策略：停牌/缺失行情记作当日收益 0（现金持有）。
+        </div>
+
+        <div id="statusBar">等待执行回测。</div>
+        <div class="warning-box" id="warningBox"></div>
+
+        <div class="metrics" id="metricsContainer"></div>
+        <div id="navChart"></div>
+        <div class="report" id="reportBox">回测报告将在执行后生成。</div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const state = {
+      plans: [],
+      previewComponents: [],
+      chart: null,
+      nextPlanId: 1,
+      nextRowId: 1,
+      lastResult: null
+    };
+
+    const metricsConfig = [
+      ["total_return", "区间总收益", "pct"],
+      ["annual_return", "年化收益率", "pct"],
+      ["annual_volatility", "年化波动率", "pct"],
+      ["sharpe_ratio", "夏普比率", "num"],
+      ["max_drawdown", "最大回撤", "pct"],
+      ["win_rate", "胜率", "pct"]
+    ];
+
+    function normalizeCode(raw) {
+      const text = String(raw ?? "").trim();
+      if (!text) return "";
+      const direct = text.match(/\d{6}/);
+      if (direct) return direct[0];
+      const digits = text.replace(/\D/g, "");
+      if (!digits) return "";
+      return digits.slice(-6).padStart(6, "0");
+    }
+
+    function makeRow(code = "", name = "", weight = 0) {
+      return {
+        id: state.nextRowId++,
+        code: normalizeCode(code),
+        name: String(name ?? "").trim(),
+        weight: Number.isFinite(Number(weight)) ? Number(weight) : 0
+      };
+    }
+
+    function sumWeights(rows) {
+      return rows.reduce((acc, row) => acc + (Number(row.weight) || 0), 0);
+    }
+
+    function normalizeWeights(rows, decimals = 4) {
+      const validRows = rows.filter((row) => normalizeCode(row.code));
+      if (!validRows.length) return;
+
+      let baseWeights = validRows.map((row) => Number(row.weight) || 0);
+      const total = baseWeights.reduce((a, b) => a + b, 0);
+      if (total <= 0) {
+        baseWeights = validRows.map(() => 1);
+      }
+
+      const scale = 10 ** decimals;
+      const rawUnits = baseWeights.map((w) => (w / baseWeights.reduce((a, b) => a + b, 0)) * 100 * scale);
+      const floorUnits = rawUnits.map((v) => Math.floor(v));
+      let remain = Math.round(100 * scale - floorUnits.reduce((a, b) => a + b, 0));
+
+      const fractions = rawUnits
+        .map((v, i) => ({ i, frac: v - floorUnits[i] }))
+        .sort((a, b) => b.frac - a.frac);
+
+      let cursor = 0;
+      while (remain > 0 && fractions.length > 0) {
+        floorUnits[fractions[cursor % fractions.length].i] += 1;
+        remain -= 1;
+        cursor += 1;
+      }
+
+      validRows.forEach((row, idx) => {
+        row.weight = floorUnits[idx] / scale;
+      });
+    }
+
+    function distributeRemainingWeights(rows, decimals = 4) {
+      const validRows = rows.filter((row) => normalizeCode(row.code));
+      if (!validRows.length) {
+        return { ok: false, message: "没有可分配权重的有效成分股。" };
+      }
+
+      if (validRows.some((row) => (Number(row.weight) || 0) < 0)) {
+        return { ok: false, message: "存在负权重，请先修正后再分配剩余权重。" };
+      }
+
+      const zeroRows = validRows.filter((row) => Math.abs(Number(row.weight) || 0) < 1e-12);
+      if (!zeroRows.length) {
+        return { ok: false, message: "当前没有权重为 0 的成分股可分配剩余权重。" };
+      }
+
+      const fixedTotal = validRows.reduce((acc, row) => {
+        const weight = Number(row.weight) || 0;
+        return acc + (weight > 0 ? weight : 0);
+      }, 0);
+      const remaining = 100 - fixedTotal;
+      if (remaining < -0.00005) {
+        return { ok: false, message: `当前非零权重合计 ${fixedTotal.toFixed(4)}%，已超过 100%，无法分配剩余权重。` };
+      }
+      if (remaining <= 0.00005) {
+        return { ok: false, message: "当前剩余权重为 0，无需分配。" };
+      }
+
+      const scale = 10 ** decimals;
+      const totalUnits = Math.round(remaining * scale);
+      const baseUnits = Math.floor(totalUnits / zeroRows.length);
+      let remainUnits = totalUnits - baseUnits * zeroRows.length;
+
+      zeroRows.forEach((row) => {
+        const extraUnit = remainUnits > 0 ? 1 : 0;
+        row.weight = (baseUnits + extraUnit) / scale;
+        remainUnits -= extraUnit;
+      });
+
+      return {
+        ok: true,
+        assignedCount: zeroRows.length,
+        remaining,
+      };
+    }
+
+    function parseCustomDates() {
+      return document.getElementById("customDates").value
+        .split("\n")
+        .map((line) => line.trim())
+        .filter((line) => line);
+    }
+
+    function getBackendUrl() {
+      return document.getElementById("backendUrl").value.trim().replace(/\/$/, "");
+    }
+
+    function createPlan(effectiveDate, components = null) {
+      const plan = {
+        id: state.nextPlanId++,
+        effectiveDate,
+        components: components?.map((c) => makeRow(c.code, c.name, c.weight)) ?? [makeRow()]
+      };
+      return plan;
+    }
+
+    function addPlan(copyLast = true) {
+      syncPlansFromDom();
+
+      const today = new Date().toISOString().slice(0, 10);
+      let plan;
+      if (copyLast && state.plans.length) {
+        const last = state.plans[state.plans.length - 1];
+        const copyDate = new Date(last.effectiveDate || today);
+        copyDate.setMonth(copyDate.getMonth() + 1);
+        const nextDate = copyDate.toISOString().slice(0, 10);
+        plan = createPlan(nextDate, last.components);
+      } else {
+        plan = createPlan(today, null);
+      }
+      state.plans.push(plan);
+      renderPlans();
+      renderPlanSelect();
+    }
+
+    function removePlan(planId) {
+      if (state.plans.length <= 1) return;
+      state.plans = state.plans.filter((p) => p.id !== planId);
+      renderPlans();
+      renderPlanSelect();
+    }
+
+    function findPlan(planId) {
+      return state.plans.find((plan) => plan.id === planId);
+    }
+
+    function renderPlanSelect() {
+      const select = document.getElementById("targetPlanSelect");
+      const previousValue = select.value;
+      select.innerHTML = "";
+      state.plans.forEach((plan, idx) => {
+        const option = document.createElement("option");
+        option.value = String(plan.id);
+        option.textContent = `计划${idx + 1}（${plan.effectiveDate || "未设置日期"}）`;
+        select.appendChild(option);
+      });
+      if ([...select.options].some((opt) => opt.value === previousValue)) {
+        select.value = previousValue;
+      }
+    }
+
+    function renderPreviewTable() {
+      const tbody = document.getElementById("previewTableBody");
+      const rows = state.previewComponents.slice(0, 100);
+      if (!rows.length) {
+        tbody.innerHTML = `<tr><td colspan="3" class="muted">解析结果将在这里预览</td></tr>`;
+        return;
+      }
+      tbody.innerHTML = rows.map((row) => `
+        <tr>
+          <td>${row.code}</td>
+          <td>${row.name || "-"}</td>
+          <td>${Number(row.weight).toFixed(4)}</td>
+        </tr>
+      `).join("");
+    }
+
+    function renderPlans() {
+      const container = document.getElementById("plansContainer");
+      container.innerHTML = state.plans.map((plan, index) => {
+        const total = sumWeights(plan.components);
+        const sumClass = Math.abs(total - 100) <= 0.05 ? "sum-tag" : "sum-tag warn";
+        const rows = plan.components.map((row) => `
+          <tr>
+            <td>
+              <input type="text" value="${row.code}" data-action="edit-cell" data-plan-id="${plan.id}" data-row-id="${row.id}" data-field="code" placeholder="000001" />
+            </td>
+            <td>
+              <input type="text" value="${row.name || ""}" data-action="edit-cell" data-plan-id="${plan.id}" data-row-id="${row.id}" data-field="name" placeholder="可选" />
+            </td>
+            <td>
+              <input type="number" step="0.0001" value="${Number(row.weight) || 0}" data-action="edit-cell" data-plan-id="${plan.id}" data-row-id="${row.id}" data-field="weight" />
+            </td>
+            <td>
+              <button class="danger" data-action="remove-row" data-plan-id="${plan.id}" data-row-id="${row.id}">删除</button>
+            </td>
+          </tr>
+        `).join("");
+
+        return `
+          <div class="plan-card">
+            <div class="plan-header">
+              <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                <div class="plan-title">调仓计划 ${index + 1}</div>
+                <label style="min-width:auto;">生效日</label>
+                <input type="date" value="${plan.effectiveDate}" data-action="edit-plan-date" data-plan-id="${plan.id}" />
+                <div class="${sumClass}" data-role="weight-sum" data-plan-id="${plan.id}">权重合计 ${total.toFixed(4)}%</div>
+              </div>
+              <div style="display:flex; gap:6px; flex-wrap:wrap;">
+                <button class="light" data-action="add-row" data-plan-id="${plan.id}">新增成分股</button>
+                <button class="light" data-action="fill-remaining" data-plan-id="${plan.id}">分配剩余权重</button>
+                <button class="secondary" data-action="equal-weight" data-plan-id="${plan.id}">一键平均分配</button>
+                <button class="danger" data-action="remove-plan" data-plan-id="${plan.id}" ${state.plans.length <= 1 ? "disabled" : ""}>删除计划</button>
+              </div>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th style="width:110px;">代码</th>
+                    <th>名称</th>
+                    <th style="width:130px;">权重(%)</th>
+                    <th style="width:80px;">操作</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${rows || `<tr><td colspan="4" class="muted">暂无成分股</td></tr>`}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        `;
+      }).join("");
+    }
+
+    function upsertStatus(text) {
+      document.getElementById("statusBar").textContent = text;
+    }
+
+    function updatePlanWeightBadge(planId) {
+      const plan = findPlan(planId);
+      const badge = document.querySelector(`[data-role="weight-sum"][data-plan-id="${planId}"]`);
+      if (!plan || !badge) return;
+      const total = sumWeights(plan.components);
+      badge.textContent = `权重合计 ${total.toFixed(4)}%`;
+      badge.classList.toggle("warn", Math.abs(total - 100) > 0.05);
+    }
+
+    function syncPlansFromDom() {
+      const container = document.getElementById("plansContainer");
+      if (!container) return;
+
+      let shouldRefreshPlanSelect = false;
+
+      container.querySelectorAll('[data-action="edit-plan-date"]').forEach((input) => {
+        const plan = findPlan(Number(input.dataset.planId));
+        if (!plan) return;
+
+        if (plan.effectiveDate !== input.value) {
+          plan.effectiveDate = input.value;
+          shouldRefreshPlanSelect = true;
+        }
+      });
+
+      container.querySelectorAll('[data-action="edit-cell"]').forEach((input) => {
+        const plan = findPlan(Number(input.dataset.planId));
+        const row = plan?.components.find((item) => item.id === Number(input.dataset.rowId));
+        if (!row) return;
+
+        if (input.dataset.field === "code") {
+          row.code = input.value;
+        } else if (input.dataset.field === "name") {
+          row.name = input.value;
+        } else if (input.dataset.field === "weight") {
+          row.weight = Number(input.value) || 0;
+        }
+      });
+
+      if (shouldRefreshPlanSelect) {
+        renderPlanSelect();
+      }
+    }
+
+    function setWarnings(messages) {
+      const box = document.getElementById("warningBox");
+      if (!messages || !messages.length) {
+        box.style.display = "none";
+        box.textContent = "";
+        return;
+      }
+      box.style.display = "block";
+      box.textContent = messages.join("\n");
+    }
+
+    function formatMetric(value, mode) {
+      if (!Number.isFinite(Number(value))) return "-";
+      if (mode === "pct") return `${(Number(value) * 100).toFixed(2)}%`;
+      return Number(value).toFixed(3);
+    }
+
+    function renderMetrics(metrics = {}) {
+      const container = document.getElementById("metricsContainer");
+      container.innerHTML = metricsConfig.map(([key, label, mode]) => `
+        <div class="metric">
+          <div class="name">${label}</div>
+          <div class="value">${formatMetric(metrics[key], mode)}</div>
+        </div>
+      `).join("");
+    }
+
+    function renderChart(nav = []) {
+      const dom = document.getElementById("navChart");
+      if (!state.chart) {
+        state.chart = echarts.init(dom);
+      }
+      const dates = nav.map((item) => item.date);
+      const values = nav.map((item) => item.value);
+      state.chart.setOption({
+        animationDuration: 500,
+        tooltip: { trigger: "axis" },
+        grid: { top: 26, left: 48, right: 18, bottom: 42 },
+        xAxis: {
+          type: "category",
+          data: dates,
+          axisLabel: { color: "#475569" }
+        },
+        yAxis: {
+          type: "value",
+          scale: true,
+          axisLabel: { color: "#475569" },
+          splitLine: { lineStyle: { color: "#e2e8f0" } }
+        },
+        series: [{
+          data: values,
+          type: "line",
+          smooth: true,
+          showSymbol: false,
+          lineStyle: { width: 2.2, color: "#0057b8" },
+          areaStyle: {
+            color: {
+              type: "linear",
+              x: 0, y: 0, x2: 0, y2: 1,
+              colorStops: [
+                { offset: 0, color: "rgba(0,87,184,0.22)" },
+                { offset: 1, color: "rgba(0,87,184,0.02)" }
+              ]
+            }
+          }
+        }]
+      });
+    }
+
+    function renderReport(result) {
+      const metrics = result.metrics || {};
+      const startDate = result.nav?.[0]?.date || "-";
+      const endDate = result.nav?.[result.nav.length - 1]?.date || "-";
+      const rebalanceCount = (result.applied_rebalance_dates || []).length;
+
+      const text = [
+        `回测区间：${startDate} 至 ${endDate}`,
+        `数据源：${result.data_source || "AKShare"}`,
+        `调仓执行次数：${rebalanceCount}`,
+        `区间总收益：${formatMetric(metrics.total_return, "pct")}，年化收益率：${formatMetric(metrics.annual_return, "pct")}，年化波动率：${formatMetric(metrics.annual_volatility, "pct")}`,
+        `最大回撤：${formatMetric(metrics.max_drawdown, "pct")}，夏普比率：${formatMetric(metrics.sharpe_ratio, "num")}，胜率：${formatMetric(metrics.win_rate, "pct")}`,
+        `缺失数据处理：${result.missing_data_policy || "hold_cash"}`
+      ].join("\n");
+
+      document.getElementById("reportBox").textContent = text;
+    }
+
+    function collectPayload() {
+      syncPlansFromDom();
+
+      const plans = state.plans
+        .map((plan) => {
+          const components = plan.components
+            .map((row) => ({
+              code: normalizeCode(row.code),
+              name: String(row.name || "").trim(),
+              weight: Number(row.weight) || 0
+            }))
+            .filter((row) => row.code);
+
+          return {
+            effective_date: plan.effectiveDate,
+            components
+          };
+        })
+        .filter((plan) => plan.components.length > 0)
+        .sort((a, b) => a.effective_date.localeCompare(b.effective_date));
+
+      if (!plans.length) {
+        throw new Error("至少需要一条包含成分股的调仓计划");
+      }
+
+      return {
+        start_date: document.getElementById("startDate").value,
+        end_date: document.getElementById("endDate").value,
+        rebalance_mode: document.getElementById("rebalanceMode").value,
+        custom_rebalance_dates: parseCustomDates(),
+        risk_free_rate: Number(document.getElementById("riskFreeRate").value || 0),
+        missing_data_policy: "hold_cash",
+        plans
+      };
+    }
+
+    async function parseExcel() {
+      const file = document.getElementById("fileInput").files[0];
+      if (!file) {
+        upsertStatus("请先选择 xls/xlsx 文件。");
+        return;
+      }
+
+      const backend = getBackendUrl();
+      const formData = new FormData();
+      formData.append("file", file);
+
+      upsertStatus("正在解析Excel文件...");
+      try {
+        const resp = await fetch(`${backend}/api/parse-components`, { method: "POST", body: formData });
+        const data = await resp.json();
+        if (!resp.ok) {
+          throw new Error(data.detail || "Excel 解析失败");
+        }
+        state.previewComponents = (data.components || []).map((item) =>
+          makeRow(item.code, item.name, item.weight)
+        );
+        document.getElementById("applyPreviewBtn").disabled = state.previewComponents.length === 0;
+        document.getElementById("importSummary").textContent =
+          `文件 ${data.filename}：共 ${data.row_count} 行，解析 ${data.parsed_count} 行，跳过 ${data.skipped_rows} 行。代码列：${data.code_column}；权重列：${data.weight_column || "未识别(等权)"}。导入预览保留 Excel 原始权重，回测时再归一化。`;
+        renderPreviewTable();
+        upsertStatus("Excel 解析完成，可应用到任一调仓计划。");
+      } catch (error) {
+        upsertStatus(`Excel 解析失败：${error.message}`);
+      }
+    }
+
+    function applyPreviewToPlan() {
+      syncPlansFromDom();
+
+      const targetId = Number(document.getElementById("targetPlanSelect").value);
+      const plan = findPlan(targetId);
+      if (!plan) {
+        upsertStatus("未找到目标调仓计划。");
+        return;
+      }
+      if (!state.previewComponents.length) {
+        upsertStatus("没有可应用的解析结果。");
+        return;
+      }
+
+      plan.components = state.previewComponents.map((item) => makeRow(item.code, item.name, item.weight));
+      renderPlans();
+      upsertStatus(`已将解析结果应用到调仓计划（${plan.effectiveDate}），并保留 Excel 原始权重。`);
+    }
+
+    async function runBacktest() {
+      let payload;
+      try {
+        payload = collectPayload();
+      } catch (error) {
+        upsertStatus(`参数错误：${error.message}`);
+        return;
+      }
+
+      if (!payload.start_date || !payload.end_date) {
+        upsertStatus("请先填写回测开始与结束日期。");
+        return;
+      }
+
+      const backend = getBackendUrl();
+      upsertStatus("正在执行回测并拉取行情数据，请稍候...");
+      setWarnings([]);
+
+      try {
+        const resp = await fetch(`${backend}/api/backtest`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload)
+        });
+
+        const data = await resp.json();
+        if (!resp.ok) {
+          throw new Error(data.detail || "回测失败");
+        }
+
+        state.lastResult = data;
+        renderMetrics(data.metrics || {});
+        renderChart(data.nav || []);
+        renderReport(data);
+        setWarnings(data.warnings || []);
+
+        upsertStatus(
+          `回测完成：${data.nav?.[0]?.date || "-"} 至 ${data.nav?.[data.nav.length - 1]?.date || "-"}，共 ${data.nav?.length || 0} 个交易日。`
+        );
+      } catch (error) {
+        upsertStatus(`回测失败：${error.message}`);
+      }
+    }
+
+    function handlePlanEvents(event) {
+      const target = event.target;
+      const action = target.dataset.action;
+      if (!action) return;
+
+      const planId = Number(target.dataset.planId);
+      const rowId = Number(target.dataset.rowId);
+      const plan = findPlan(planId);
+      if (!plan) return;
+
+      if (action === "add-row" && event.type === "click") {
+        plan.components.push(makeRow());
+        renderPlans();
+        return;
+      }
+
+      if (action === "remove-plan" && event.type === "click") {
+        removePlan(planId);
+        return;
+      }
+
+      if (action === "equal-weight" && event.type === "click") {
+        normalizeWeights(plan.components);
+        renderPlans();
+        return;
+      }
+
+      if (action === "fill-remaining" && event.type === "click") {
+        const result = distributeRemainingWeights(plan.components);
+        if (!result.ok) {
+          upsertStatus(result.message);
+          return;
+        }
+        renderPlans();
+        upsertStatus(`已将剩余 ${result.remaining.toFixed(4)}% 平均分配到 ${result.assignedCount} 只权重为 0 的成分股。`);
+        return;
+      }
+
+      if (action === "remove-row" && event.type === "click") {
+        plan.components = plan.components.filter((row) => row.id !== rowId);
+        if (!plan.components.length) {
+          plan.components.push(makeRow());
+        }
+        renderPlans();
+        return;
+      }
+
+      if (action === "edit-plan-date" && event.type === "change") {
+        plan.effectiveDate = target.value;
+        renderPlanSelect();
+        return;
+      }
+
+      if (action === "edit-cell" && (event.type === "input" || event.type === "change")) {
+        const field = target.dataset.field;
+        const row = plan.components.find((item) => item.id === rowId);
+        if (!row) return;
+
+        if (field === "code") {
+          row.code = event.type === "change" ? normalizeCode(target.value) : target.value;
+          if (event.type === "change") {
+            target.value = row.code;
+          }
+        } else if (field === "name") {
+          row.name = target.value;
+        } else if (field === "weight") {
+          row.weight = Number(target.value) || 0;
+        }
+
+        if (event.type === "input") {
+          updatePlanWeightBadge(planId);
+          return;
+        }
+
+        renderPlans();
+      }
+    }
+
+    function initDefaults() {
+      const today = new Date();
+      const end = today.toISOString().slice(0, 10);
+      const start = new Date(today);
+      start.setFullYear(today.getFullYear() - 3);
+      const startStr = start.toISOString().slice(0, 10);
+      document.getElementById("startDate").value = startStr;
+      document.getElementById("endDate").value = end;
+
+      addPlan(false);
+      renderPlanSelect();
+      renderPlans();
+      renderPreviewTable();
+      renderMetrics();
+      renderChart([]);
+    }
+
+    document.getElementById("parseFileBtn").addEventListener("click", parseExcel);
+    document.getElementById("applyPreviewBtn").addEventListener("click", applyPreviewToPlan);
+    document.getElementById("runBacktestBtn").addEventListener("click", runBacktest);
+    document.getElementById("addPlanBtn").addEventListener("click", () => addPlan(true));
+    document.getElementById("rebalanceMode").addEventListener("change", (event) => {
+      document.getElementById("customDatesRow").style.display =
+        event.target.value === "custom" ? "flex" : "none";
+    });
+
+    document.getElementById("plansContainer").addEventListener("click", handlePlanEvents);
+    document.getElementById("plansContainer").addEventListener("input", handlePlanEvents);
+    document.getElementById("plansContainer").addEventListener("change", handlePlanEvents);
+    window.addEventListener("resize", () => {
+      if (state.chart) state.chart.resize();
+    });
+
+    initDefaults();
+  </script>
+</body>
+</html>
