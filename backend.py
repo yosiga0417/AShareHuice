@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal, ROUND_FLOOR, ROUND_HALF_UP, getcontext
 from io import BytesIO
+import json
+from pathlib import Path
 import re
 import time
 from typing import Dict, Iterable, List, Literal, Optional, Tuple
@@ -17,6 +19,12 @@ from pydantic import BaseModel, Field, validator
 
 
 getcontext().prec = 28
+
+
+BASE_DIR = Path(__file__).resolve().parent
+CACHE_ROOT = BASE_DIR / ".cache" / "akshare"
+STOCK_CACHE_DIR = CACHE_ROOT / "stock_close"
+STOCK_META_DIR = CACHE_ROOT / "stock_close_meta"
 
 
 CODE_COLUMN_CANDIDATES = [
@@ -205,6 +213,190 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+def ensure_stock_cache_dirs() -> None:
+    STOCK_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    STOCK_META_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def stock_cache_file(symbol: str) -> Path:
+    return STOCK_CACHE_DIR / f"{symbol}.csv"
+
+
+def stock_cache_meta_file(symbol: str) -> Path:
+    return STOCK_META_DIR / f"{symbol}.json"
+
+
+def normalize_price_series(series: pd.Series) -> pd.Series:
+    if series is None or len(series) == 0:
+        return pd.Series(dtype="float64", name="close")
+
+    normalized = series.copy()
+    normalized = pd.to_numeric(normalized, errors="coerce")
+    normalized.index = pd.to_datetime(normalized.index, errors="coerce").normalize()
+    normalized = normalized[~normalized.index.isna()]
+    normalized = normalized.dropna()
+    normalized = normalized[~normalized.index.duplicated(keep="last")].sort_index()
+    normalized = normalized.astype(float)
+    normalized.name = "close"
+    return normalized
+
+
+def merge_price_series(base: pd.Series, incoming: pd.Series) -> pd.Series:
+    if base is None or len(base) == 0:
+        return normalize_price_series(incoming)
+    if incoming is None or len(incoming) == 0:
+        return normalize_price_series(base)
+    return normalize_price_series(pd.concat([base, incoming]))
+
+
+def load_cached_stock_series(symbol: str) -> pd.Series:
+    cache_path = stock_cache_file(symbol)
+    if not cache_path.exists():
+        return pd.Series(dtype="float64", name="close")
+
+    try:
+        df = pd.read_csv(cache_path)
+    except Exception:  # noqa: BLE001
+        return pd.Series(dtype="float64", name="close")
+
+    if df.empty or "date" not in df.columns or "close" not in df.columns:
+        return pd.Series(dtype="float64", name="close")
+
+    series = pd.Series(df["close"].to_numpy(), index=df["date"])
+    return normalize_price_series(series)
+
+
+def save_cached_stock_series(symbol: str, series: pd.Series) -> None:
+    ensure_stock_cache_dirs()
+    clean_series = normalize_price_series(series)
+    df = clean_series.rename("close").reset_index()
+    df.columns = ["date", "close"]
+    df["date"] = df["date"].dt.strftime("%Y-%m-%d")
+    df.to_csv(stock_cache_file(symbol), index=False)
+
+
+def normalize_cached_ranges(ranges: Iterable[Tuple[date, date]]) -> List[Tuple[date, date]]:
+    normalized: List[Tuple[date, date]] = []
+
+    for start_date, end_date in sorted(ranges, key=lambda item: item[0]):
+        if start_date > end_date:
+            continue
+        if not normalized or start_date > normalized[-1][1] + timedelta(days=1):
+            normalized.append((start_date, end_date))
+            continue
+
+        last_start, last_end = normalized[-1]
+        normalized[-1] = (last_start, max(last_end, end_date))
+
+    return normalized
+
+
+def load_cached_stock_ranges(symbol: str) -> List[Tuple[date, date]]:
+    cache_path = stock_cache_file(symbol)
+    meta_path = stock_cache_meta_file(symbol)
+    if not cache_path.exists() or not meta_path.exists():
+        return []
+
+    try:
+        payload = json.loads(meta_path.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return []
+
+    ranges: List[Tuple[date, date]] = []
+    for item in payload.get("ranges", []):
+        if not isinstance(item, dict):
+            continue
+        try:
+            start_date = pd.Timestamp(item["start"]).date()
+            end_date = pd.Timestamp(item["end"]).date()
+        except Exception:  # noqa: BLE001
+            continue
+        if start_date <= end_date:
+            ranges.append((start_date, end_date))
+
+    return normalize_cached_ranges(ranges)
+
+
+def save_cached_stock_ranges(symbol: str, ranges: Iterable[Tuple[date, date]]) -> None:
+    ensure_stock_cache_dirs()
+    payload = {
+        "ranges": [
+            {"start": start_date.isoformat(), "end": end_date.isoformat()}
+            for start_date, end_date in normalize_cached_ranges(ranges)
+        ]
+    }
+    stock_cache_meta_file(symbol).write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+def compute_missing_ranges(
+    start_date: date,
+    end_date: date,
+    cached_ranges: Iterable[Tuple[date, date]],
+) -> List[Tuple[date, date]]:
+    if start_date > end_date:
+        return []
+
+    missing: List[Tuple[date, date]] = []
+    cursor = start_date
+
+    for cached_start, cached_end in normalize_cached_ranges(cached_ranges):
+        if cached_end < cursor:
+            continue
+        if cached_start > end_date:
+            break
+
+        if cached_start > cursor:
+            gap_end = min(end_date, cached_start - timedelta(days=1))
+            if cursor <= gap_end:
+                missing.append((cursor, gap_end))
+
+        cursor = max(cursor, cached_end + timedelta(days=1))
+        if cursor > end_date:
+            break
+
+    if cursor <= end_date:
+        missing.append((cursor, end_date))
+
+    return missing
+
+
+def expand_fetch_range(
+    gap_start: date,
+    gap_end: date,
+    cached_ranges: Iterable[Tuple[date, date]],
+) -> Tuple[date, date]:
+    fetch_start = gap_start
+    fetch_end = gap_end
+    previous_end: Optional[date] = None
+    next_start: Optional[date] = None
+
+    for cached_start, cached_end in normalize_cached_ranges(cached_ranges):
+        if cached_end < gap_start:
+            previous_end = cached_end
+            continue
+        if cached_start > gap_end:
+            next_start = cached_start
+            break
+
+    if previous_end is not None:
+        fetch_start = min(fetch_start, previous_end)
+    if next_start is not None:
+        fetch_end = max(fetch_end, next_start)
+
+    return fetch_start, fetch_end
+
+
+def slice_price_series(series: pd.Series, start_date: date, end_date: date) -> pd.Series:
+    if series is None or len(series) == 0:
+        return pd.Series(dtype="float64", name="close")
+
+    mask = (series.index >= pd.Timestamp(start_date)) & (series.index <= pd.Timestamp(end_date))
+    return normalize_price_series(series.loc[mask])
 
 
 def normalize_stock_code(raw_code: object) -> str:
@@ -499,14 +691,11 @@ def fetch_close_prices(
     frames: Dict[str, pd.Series] = {}
     warnings: List[str] = []
 
-    beg = start_date.strftime("%Y%m%d")
-    end = end_date.strftime("%Y%m%d")
-
     for symbol in symbols:
         try:
-            series, source = fetch_symbol_close_series(symbol, beg, end)
+            series, source = fetch_symbol_close_series(symbol, start_date, end_date)
             frames[symbol] = series
-            if source != "stock_zh_a_hist":
+            if source == "stock_zh_a_hist_tx":
                 warnings.append(f"{symbol} 使用兜底数据源 {source}")
         except Exception as exc:  # noqa: BLE001
             warnings.append(f"{symbol} 行情获取失败: {exc}")
@@ -608,7 +797,11 @@ def try_fetch_hist_tx(symbol: str, beg: str, end: str, max_retry: int = 2) -> pd
     raise RuntimeError(f"stock_zh_a_hist_tx({tx_symbol}) failed: {last_error}")
 
 
-def fetch_symbol_close_series(symbol: str, beg: str, end: str) -> Tuple[pd.Series, str]:
+def fetch_symbol_close_series_remote(
+    symbol: str, start_date: date, end_date: date
+) -> Tuple[pd.Series, str]:
+    beg = start_date.strftime("%Y%m%d")
+    end = end_date.strftime("%Y%m%d")
     errors: List[str] = []
 
     try:
@@ -624,6 +817,64 @@ def fetch_symbol_close_series(symbol: str, beg: str, end: str) -> Tuple[pd.Serie
         errors.append(str(exc))
 
     raise RuntimeError("; ".join(errors))
+
+
+def fetch_symbol_close_series(
+    symbol: str, start_date: date, end_date: date
+) -> Tuple[pd.Series, str]:
+    request_start = pd.Timestamp(start_date).date()
+    request_end = pd.Timestamp(end_date).date()
+    if request_start > request_end:
+        raise ValueError("开始日期不能晚于结束日期")
+
+    today = date.today()
+    historical_end = min(request_end, today - timedelta(days=1))
+    includes_today = request_start <= today <= request_end
+
+    cached_series = load_cached_stock_series(symbol)
+    cached_ranges = load_cached_stock_ranges(symbol)
+
+    fetched_sources: List[str] = []
+    cache_dirty = False
+    ranges_dirty = False
+
+    if request_start <= historical_end:
+        missing_ranges = compute_missing_ranges(request_start, historical_end, cached_ranges)
+        for gap_start, gap_end in missing_ranges:
+            fetch_start, fetch_end = expand_fetch_range(gap_start, gap_end, cached_ranges)
+            gap_series, source = fetch_symbol_close_series_remote(symbol, fetch_start, fetch_end)
+            cached_series = merge_price_series(cached_series, gap_series)
+            cached_ranges = normalize_cached_ranges(cached_ranges + [(gap_start, gap_end)])
+            fetched_sources.append(source)
+            cache_dirty = True
+            ranges_dirty = True
+
+    refresh_error: Optional[Exception] = None
+    if includes_today:
+        try:
+            today_series, source = fetch_symbol_close_series_remote(symbol, today, today)
+            cached_series = merge_price_series(cached_series, today_series)
+            fetched_sources.append(source)
+            cache_dirty = True
+        except Exception as exc:  # noqa: BLE001
+            refresh_error = exc
+
+    if cache_dirty:
+        save_cached_stock_series(symbol, cached_series)
+    if ranges_dirty:
+        save_cached_stock_ranges(symbol, cached_ranges)
+
+    result = slice_price_series(cached_series, request_start, request_end)
+    if result.empty:
+        if refresh_error is not None:
+            raise RuntimeError(str(refresh_error))
+        raise RuntimeError("区间内没有可用收盘价")
+
+    if "stock_zh_a_hist_tx" in fetched_sources:
+        return result, "stock_zh_a_hist_tx"
+    if "stock_zh_a_hist" in fetched_sources:
+        return result, "stock_zh_a_hist"
+    return result, "cache"
 
 
 def fetch_benchmark_nav(
