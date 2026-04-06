@@ -268,7 +268,7 @@
     }
 
     #navChart {
-      height: 360px;
+      height: 500px;
       width: 100%;
       border: 1px solid var(--border);
       border-radius: 12px;
@@ -310,6 +310,25 @@
     .muted {
       color: var(--subtle);
       font-size: 12px;
+    }
+
+    .metric .value.positive { color: #0f766e; }
+    .metric .value.negative { color: #b91c1c; }
+    .metric .value.warning  { color: #c2410c; }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+    .spinner {
+      display: inline-block;
+      width: 13px;
+      height: 13px;
+      border: 2px solid rgba(255, 255, 255, 0.4);
+      border-top-color: #fff;
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+      vertical-align: middle;
+      margin-right: 5px;
     }
   </style>
 </head>
@@ -726,55 +745,175 @@
       return Number(value).toFixed(3);
     }
 
-    function renderMetrics(metrics = {}) {
-      const container = document.getElementById("metricsContainer");
-      container.innerHTML = metricsConfig.map(([key, label, mode]) => `
-        <div class="metric">
-          <div class="name">${label}</div>
-          <div class="value">${formatMetric(metrics[key], mode)}</div>
-        </div>
-      `).join("");
+    function metricColorClass(key, value) {
+      const v = Number(value);
+      if (!Number.isFinite(v)) return "";
+      switch (key) {
+        case "total_return":
+        case "annual_return":
+          return v > 0 ? "positive" : v < 0 ? "negative" : "";
+        case "max_drawdown":
+          return "negative";
+        case "sharpe_ratio":
+          return v >= 1 ? "positive" : v >= 0 ? "warning" : "negative";
+        case "win_rate":
+          return v >= 0.5 ? "positive" : "warning";
+        default:
+          return "";
+      }
     }
 
-    function renderChart(nav = []) {
+    function renderMetrics(metrics = {}) {
+      const container = document.getElementById("metricsContainer");
+      container.innerHTML = metricsConfig.map(([key, label, mode]) => {
+        const colorClass = metricColorClass(key, metrics[key]);
+        return `
+          <div class="metric">
+            <div class="name">${label}</div>
+            <div class="value ${colorClass}">${formatMetric(metrics[key], mode)}</div>
+          </div>
+        `;
+      }).join("");
+    }
+
+    function renderChart(nav = [], rebalanceDates = []) {
       const dom = document.getElementById("navChart");
       if (!state.chart) {
         state.chart = echarts.init(dom);
       }
+
       const dates = nav.map((item) => item.date);
       const values = nav.map((item) => item.value);
+
+      // 计算回撤序列
+      const drawdown = [];
+      let peak = values[0] ?? 1;
+      for (const v of values) {
+        if (v > peak) peak = v;
+        drawdown.push(peak > 0 ? (v - peak) / peak : 0);
+      }
+
+      // 调仓日 markLine（只标注实际在数据范围内的日期）
+      const dateSet = new Set(dates);
+      const markLineData = rebalanceDates
+        .filter((d) => dateSet.has(d))
+        .map((d) => ({ xAxis: d }));
+
       state.chart.setOption({
         animationDuration: 500,
-        tooltip: { trigger: "axis" },
-        grid: { top: 26, left: 48, right: 18, bottom: 42 },
-        xAxis: {
-          type: "category",
-          data: dates,
-          axisLabel: { color: "#475569" }
+        tooltip: {
+          trigger: "axis",
+          axisPointer: { type: "cross", link: [{ xAxisIndex: "all" }] },
+          backgroundColor: "rgba(15,23,42,0.88)",
+          borderColor: "#334155",
+          textStyle: { color: "#f1f5f9", fontSize: 12 },
+          formatter(params) {
+            if (!params.length) return "";
+            const date = params[0].axisValue;
+            let html = `<div style="margin-bottom:5px;font-weight:600;">${date}</div>`;
+            for (const p of params) {
+              if (p.seriesIndex === 0 && p.data != null) {
+                const v = p.data;
+                const ret = ((v - 1) * 100).toFixed(2);
+                const retColor = v >= 1 ? "#34d399" : "#f87171";
+                html += `净值 <b>${v.toFixed(4)}</b>&nbsp;&nbsp;累计 <span style="color:${retColor}">${ret}%</span><br/>`;
+              } else if (p.seriesIndex === 1 && p.data != null) {
+                const v = p.data;
+                html += `回撤 <span style="color:#f87171">${(v * 100).toFixed(2)}%</span>`;
+              }
+            }
+            return html;
+          }
         },
-        yAxis: {
-          type: "value",
-          scale: true,
-          axisLabel: { color: "#475569" },
-          splitLine: { lineStyle: { color: "#e2e8f0" } }
-        },
-        series: [{
-          data: values,
-          type: "line",
-          smooth: true,
-          showSymbol: false,
-          lineStyle: { width: 2.2, color: "#0057b8" },
-          areaStyle: {
-            color: {
-              type: "linear",
-              x: 0, y: 0, x2: 0, y2: 1,
-              colorStops: [
-                { offset: 0, color: "rgba(0,87,184,0.22)" },
-                { offset: 1, color: "rgba(0,87,184,0.02)" }
-              ]
+        axisPointer: { link: [{ xAxisIndex: "all" }] },
+        grid: [
+          { top: 24, left: 54, right: 18, bottom: "36%" },
+          { top: "68%", left: 54, right: 18, bottom: 32 }
+        ],
+        xAxis: [
+          {
+            type: "category",
+            data: dates,
+            gridIndex: 0,
+            axisLabel: { show: false },
+            axisLine: { lineStyle: { color: "#e2e8f0" } },
+            axisTick: { show: false }
+          },
+          {
+            type: "category",
+            data: dates,
+            gridIndex: 1,
+            axisLabel: { color: "#64748b", fontSize: 11 },
+            axisLine: { lineStyle: { color: "#e2e8f0" } }
+          }
+        ],
+        yAxis: [
+          {
+            type: "value",
+            scale: true,
+            gridIndex: 0,
+            axisLabel: { color: "#475569" },
+            splitLine: { lineStyle: { color: "#e2e8f0" } }
+          },
+          {
+            type: "value",
+            gridIndex: 1,
+            min: "dataMin",
+            axisLabel: {
+              color: "#94a3b8",
+              fontSize: 10,
+              formatter: (v) => v === 0 ? "0" : (v * 100).toFixed(0) + "%"
+            },
+            splitLine: { lineStyle: { color: "#f1f5f9" } }
+          }
+        ],
+        series: [
+          {
+            name: "指数净值",
+            data: values,
+            type: "line",
+            xAxisIndex: 0,
+            yAxisIndex: 0,
+            smooth: true,
+            showSymbol: false,
+            lineStyle: { width: 2.2, color: "#0057b8" },
+            areaStyle: {
+              color: {
+                type: "linear", x: 0, y: 0, x2: 0, y2: 1,
+                colorStops: [
+                  { offset: 0, color: "rgba(0,87,184,0.22)" },
+                  { offset: 1, color: "rgba(0,87,184,0.02)" }
+                ]
+              }
+            },
+            markLine: markLineData.length ? {
+              silent: true,
+              symbol: "none",
+              lineStyle: { color: "#94a3b8", type: "dashed", width: 1, opacity: 0.45 },
+              label: { show: false },
+              data: markLineData
+            } : undefined
+          },
+          {
+            name: "回撤",
+            data: drawdown,
+            type: "line",
+            xAxisIndex: 1,
+            yAxisIndex: 1,
+            smooth: false,
+            showSymbol: false,
+            lineStyle: { width: 1.5, color: "#b91c1c" },
+            areaStyle: {
+              color: {
+                type: "linear", x: 0, y: 0, x2: 0, y2: 1,
+                colorStops: [
+                  { offset: 0, color: "rgba(185,28,28,0.22)" },
+                  { offset: 1, color: "rgba(185,28,28,0.03)" }
+                ]
+              }
             }
           }
-        }]
+        ]
       });
     }
 
@@ -897,6 +1036,10 @@
       }
 
       const backend = getBackendUrl();
+      const btn = document.getElementById("runBacktestBtn");
+      btn.disabled = true;
+      btn.innerHTML = '<span class="spinner"></span>回测中...';
+
       upsertStatus("正在执行回测并拉取行情数据，请稍候...");
       setWarnings([]);
 
@@ -914,7 +1057,7 @@
 
         state.lastResult = data;
         renderMetrics(data.metrics || {});
-        renderChart(data.nav || []);
+        renderChart(data.nav || [], data.applied_rebalance_dates || []);
         renderReport(data);
         setWarnings(data.warnings || []);
 
@@ -923,6 +1066,9 @@
         );
       } catch (error) {
         upsertStatus(`回测失败：${error.message}`);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = "执行回测";
       }
     }
 
@@ -1018,7 +1164,7 @@
       renderPlans();
       renderPreviewTable();
       renderMetrics();
-      renderChart([]);
+      renderChart([], []);
     }
 
     document.getElementById("parseFileBtn").addEventListener("click", parseExcel);
