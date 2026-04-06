@@ -358,6 +358,40 @@
       margin-bottom: 10px;
     }
 
+    /* ── Fallback source log ── */
+    #fallbackLogSection {
+      display: none;
+      margin-bottom: 12px;
+    }
+
+    #fallbackLogToggle {
+      background: none;
+      border: none;
+      color: var(--subtle);
+      font-size: 11px;
+      padding: 3px 0;
+      cursor: pointer;
+    }
+
+    #fallbackLogToggle:hover { color: var(--text); transform: none; opacity: 1; }
+
+    #fallbackLogBody {
+      display: none;
+      margin-top: 6px;
+      padding: 8px 11px;
+      border: 1px solid var(--border);
+      border-radius: 9px;
+      background: #f8fafc;
+      font-size: 11.5px;
+      color: var(--subtle);
+      white-space: pre-wrap;
+      line-height: 1.75;
+      max-height: 240px;
+      overflow-y: auto;
+    }
+
+    #fallbackLogBody.open { display: block; }
+
     .hint {
       color: var(--subtle);
       font-size: 11px;
@@ -465,6 +499,36 @@
 
     @media (max-width: 480px) {
       .params-grid { grid-template-columns: 1fr; }
+    }
+
+    /* ── Benchmark selector bar ── */
+    .benchmark-bar {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 8px;
+      padding: 6px 12px;
+      border: 1px solid var(--border);
+      border-radius: 9px;
+      background: #f8fafc;
+      font-size: 12px;
+    }
+
+    .bm-label {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      cursor: pointer;
+      user-select: none;
+      white-space: nowrap;
+    }
+
+    .bm-swatch {
+      display: inline-block;
+      width: 12px;
+      height: 3px;
+      border-radius: 2px;
     }
   </style>
 </head>
@@ -575,11 +639,32 @@
       <div class="section-head">
         <span class="step-badge done">4</span>
         <h2>回测结果</h2>
+        <button id="exportCsvBtn" class="light" style="font-size:11px;padding:4px 9px;" disabled title="导出净值数据为 CSV">↓ CSV</button>
+        <button id="exportImgBtn" class="light" style="font-size:11px;padding:4px 9px;" disabled title="保存图表为 PNG">↓ 截图</button>
       </div>
       <div id="statusBar">等待执行回测。</div>
       <div class="warning-box" id="warningBox"></div>
       <div class="metrics" id="metricsContainer"></div>
+      <div class="benchmark-bar" id="benchmarkBar">
+        <span style="color:var(--subtle);">对比基准：</span>
+        <label class="bm-label">
+          <input type="checkbox" class="bm-check" value="000300" checked />
+          <span class="bm-swatch" style="background:#f59e0b;"></span>沪深300
+        </label>
+        <label class="bm-label">
+          <input type="checkbox" class="bm-check" value="000905" />
+          <span class="bm-swatch" style="background:#10b981;"></span>中证500
+        </label>
+        <label class="bm-label">
+          <input type="checkbox" class="bm-check" value="000001" />
+          <span class="bm-swatch" style="background:#8b5cf6;"></span>上证指数
+        </label>
+      </div>
       <div id="navChart"></div>
+      <div id="fallbackLogSection">
+        <button id="fallbackLogToggle">▸ 兜底数据源日志 <span id="fallbackLogCount"></span></button>
+        <div id="fallbackLogBody"></div>
+      </div>
       <div class="report" id="reportBox"></div>
     </div>
   </main>
@@ -958,6 +1043,23 @@
     box.textContent = messages.join("\n");
   }
 
+  function setFallbackLogs(logs) {
+    const section = document.getElementById("fallbackLogSection");
+    const body = document.getElementById("fallbackLogBody");
+    const count = document.getElementById("fallbackLogCount");
+    const toggle = document.getElementById("fallbackLogToggle");
+    if (!logs?.length) {
+      section.style.display = "none";
+      return;
+    }
+    section.style.display = "block";
+    body.textContent = logs.join("\n");
+    count.textContent = `(${logs.length} 条)`;
+    // Collapsed by default
+    body.classList.remove("open");
+    toggle.childNodes[0].textContent = "▸ 兜底数据源日志 ";
+  }
+
   function formatMetric(value, mode) {
     if (!Number.isFinite(Number(value))) return "-";
     if (mode === "pct") return `${(Number(value) * 100).toFixed(2)}%`;
@@ -986,7 +1088,14 @@
     `).join("");
   }
 
-  function renderChart(nav = [], rebalanceDates = []) {
+  const BENCHMARK_COLORS = { "000300": "#f59e0b", "000905": "#10b981", "000001": "#8b5cf6" };
+  const BENCHMARK_NAMES  = { "000300": "沪深300",  "000905": "中证500",  "000001": "上证指数" };
+
+  function getSelectedBenchmarks() {
+    return [...document.querySelectorAll(".bm-check:checked")].map(cb => cb.value);
+  }
+
+  function renderChart(nav = [], rebalanceDates = [], benchmarkNavs = {}, rebalanceHoldings = {}) {
     const dom = document.getElementById("navChart");
     if (!state.chart) state.chart = echarts.init(dom);
 
@@ -1000,10 +1109,35 @@
       drawdown.push(peak > 0 ? (v - peak) / peak : 0);
     }
 
+    const rebalanceDateSet = new Set(rebalanceDates);
     const dateSet = new Set(dates);
     const markLineData = rebalanceDates
       .filter(d => dateSet.has(d))
       .map(d => ({ xAxis: d }));
+
+    // Build benchmark series (filtered by checkbox state)
+    const selectedBm = getSelectedBenchmarks();
+    const benchmarkSeries = selectedBm
+      .filter(code => benchmarkNavs[code]?.length)
+      .map(code => {
+        const bmMap = {};
+        (benchmarkNavs[code] || []).forEach(item => { bmMap[item.date] = item.value; });
+        let bmValues = dates.map(d => bmMap[d] ?? null);
+        // Normalise to start at 1.0 if raw index points are returned
+        const firstVal = bmValues.find(v => v !== null);
+        if (firstVal != null && Math.abs(firstVal) > 5) {
+          bmValues = bmValues.map(v => v !== null ? v / firstVal : null);
+        }
+        return {
+          id: `benchmark-${code}`,
+          name: BENCHMARK_NAMES[code] || code,
+          data: bmValues,
+          type: "line",
+          xAxisIndex: 0, yAxisIndex: 0,
+          smooth: true, showSymbol: false, connectNulls: true,
+          lineStyle: { width: 1.5, color: BENCHMARK_COLORS[code] || "#888", type: "solid" }
+        };
+      });
 
     state.chart.setOption({
       animationDuration: 500,
@@ -1017,14 +1151,40 @@
           if (!params.length) return "";
           const date = params[0].axisValue;
           let html = `<div style="margin-bottom:4px;font-weight:600;">${date}</div>`;
+
+          // ── Rebalancing date: show holdings ──
+          if (rebalanceDateSet.has(date)) {
+            html += `<div style="color:#fbbf24;font-size:11px;margin-bottom:3px;">▣ 调仓日</div>`;
+            const holdings = rebalanceHoldings[date];
+            if (holdings?.length) {
+              const top = holdings.slice(0, 6);
+              top.forEach(h => {
+                html += `<div style="font-size:11px;color:#cbd5e1;">${h.code}` +
+                  `${h.name ? " " + h.name : ""} ` +
+                  `<b style="color:#f1f5f9">${Number(h.weight).toFixed(2)}%</b></div>`;
+              });
+              if (holdings.length > 6) {
+                html += `<div style="font-size:10px;color:#64748b;">…另有 ${holdings.length - 6} 只</div>`;
+              }
+            }
+            html += `<div style="border-top:1px solid #334155;margin:5px 0 3px;"></div>`;
+          }
+
+          // ── Series values ──
           for (const p of params) {
-            if (p.seriesIndex === 0 && p.data != null) {
+            if (p.seriesName === "指数净值" && p.data != null) {
               const v = p.data;
               const ret = ((v - 1) * 100).toFixed(2);
-              const color = v >= 1 ? "#34d399" : "#f87171";
-              html += `净值 <b>${v.toFixed(4)}</b>&nbsp; 累计 <span style="color:${color}">${ret}%</span><br/>`;
-            } else if (p.seriesIndex === 1 && p.data != null) {
+              const col = v >= 1 ? "#34d399" : "#f87171";
+              html += `净值 <b>${v.toFixed(4)}</b>&nbsp; 累计 <span style="color:${col}">${ret}%</span><br/>`;
+            } else if (p.seriesName === "回撤" && p.data != null) {
               html += `回撤 <span style="color:#f87171">${(p.data * 100).toFixed(2)}%</span>`;
+            } else if (p.data != null) {
+              const v = Number(p.data);
+              const ret = ((v - 1) * 100).toFixed(2);
+              const col = v >= 1 ? "#34d399" : "#f87171";
+              html += `<span style="color:${p.color}">─</span> ${p.seriesName} ` +
+                `<b>${v.toFixed(4)}</b> <span style="color:${col}">${ret}%</span><br/>`;
             }
           }
           return html;
@@ -1065,6 +1225,7 @@
       ],
       series: [
         {
+          id: "nav-series",
           name: "指数净值",
           data: values,
           type: "line",
@@ -1088,6 +1249,7 @@
           } : undefined
         },
         {
+          id: "drawdown-series",
           name: "回撤",
           data: drawdown,
           type: "line",
@@ -1103,9 +1265,25 @@
               ]
             }
           }
-        }
+        },
+        ...benchmarkSeries
       ]
+    }, {
+      notMerge: false,
+      replaceMerge: ["series"]
     });
+  }
+
+  // Re-render chart using stored result (called when benchmark checkboxes change)
+  function refreshBenchmarks() {
+    if (!state.lastResult) return;
+    const r = state.lastResult;
+    renderChart(
+      r.nav || [],
+      r.applied_rebalance_dates || [],
+      r.benchmark_nav || {},
+      r.rebalance_holdings || {}
+    );
   }
 
   function renderReport(result) {
@@ -1126,6 +1304,71 @@
         <div class="r-value">${value}</div>
       </div>
     `).join("");
+  }
+
+  function exportCsv() {
+    const result = state.lastResult;
+    if (!result?.nav?.length) return;
+
+    const bm = result.benchmark_nav || {};
+    const bmCodes = Object.keys(bm);
+    const bmMaps = {};
+    bmCodes.forEach(code => {
+      const rows = bm[code] || [];
+      // Normalise same as chart
+      const firstVal = rows[0]?.value;
+      const scale = firstVal && Math.abs(firstVal) > 5 ? firstVal : 1;
+      bmMaps[code] = {};
+      rows.forEach(item => { bmMaps[code][item.date] = item.value / scale; });
+    });
+
+    const bmHeaders = bmCodes.map(c => BENCHMARK_NAMES[c] || c);
+    const headers = ["日期", "净值", "累计收益%", ...bmHeaders];
+
+    const rows = result.nav.map(item => {
+      const ret = ((item.value - 1) * 100).toFixed(2);
+      const bmVals = bmCodes.map(c => {
+        const v = bmMaps[c][item.date];
+        return v != null ? v.toFixed(6) : "";
+      });
+      return [item.date, item.value.toFixed(6), ret, ...bmVals];
+    });
+
+    // Metrics section at bottom
+    const metricsRows = [
+      [],
+      ["指标", "数值"],
+      ...metricsConfig.map(([key, label, mode]) => [label, formatMetric(result.metrics?.[key], mode)])
+    ];
+
+    const allRows = [headers, ...rows, ...metricsRows];
+    const csv = allRows.map(row => row.join(",")).join("\n");
+    const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    const startDate = result.nav[0]?.date || "export";
+    const endDate = result.nav[result.nav.length - 1]?.date || "";
+    a.download = `backtest_${startDate}_${endDate}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
+  function exportScreenshot() {
+    if (!state.chart) return;
+    const url = state.chart.getDataURL({
+      type: "png",
+      pixelRatio: 2,
+      backgroundColor: "#ffffff"
+    });
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `backtest_chart_${new Date().toISOString().slice(0, 10)}.png`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
   }
 
   function collectPayload() {
@@ -1153,6 +1396,7 @@
       custom_rebalance_dates: parseCustomDates(),
       risk_free_rate: Number(document.getElementById("riskFreeRate").value || 0),
       missing_data_policy: "hold_cash",
+      benchmarks: ["000300", "000905", "000001"],
       plans
     };
   }
@@ -1229,9 +1473,20 @@
 
       state.lastResult = data;
       renderMetrics(data.metrics || {});
-      renderChart(data.nav || [], data.applied_rebalance_dates || []);
+      renderChart(
+        data.nav || [],
+        data.applied_rebalance_dates || [],
+        data.benchmark_nav || {},
+        data.rebalance_holdings || {}
+      );
       renderReport(data);
-      setWarnings(data.warnings || []);
+      document.getElementById("exportCsvBtn").disabled = false;
+      document.getElementById("exportImgBtn").disabled = false;
+      const allWarnings = data.warnings || [];
+      const fallbackLogs = allWarnings.filter(w => w.includes("使用兜底数据源"));
+      const otherWarnings = allWarnings.filter(w => !w.includes("使用兜底数据源"));
+      setWarnings(otherWarnings);
+      setFallbackLogs(fallbackLogs);
 
       upsertStatus(
         `回测完成：${data.nav?.[0]?.date || "-"} 至 ${data.nav?.[data.nav.length - 1]?.date || "-"}，` +
@@ -1418,6 +1673,21 @@
     const btn = document.getElementById("advToggle");
     const isOpen = body.classList.toggle("open");
     btn.textContent = (isOpen ? "▾" : "▸") + " 高级设置";
+  });
+
+  document.getElementById("fallbackLogToggle").addEventListener("click", () => {
+    const body = document.getElementById("fallbackLogBody");
+    const count = document.getElementById("fallbackLogCount");
+    const isOpen = body.classList.toggle("open");
+    document.getElementById("fallbackLogToggle").childNodes[0].textContent =
+      (isOpen ? "▾" : "▸") + " 兜底数据源日志 ";
+  });
+
+  document.getElementById("exportCsvBtn").addEventListener("click", exportCsv);
+  document.getElementById("exportImgBtn").addEventListener("click", exportScreenshot);
+
+  document.getElementById("benchmarkBar").addEventListener("change", event => {
+    if (event.target.classList.contains("bm-check")) refreshBenchmarks();
   });
 
   window.addEventListener("resize", () => {

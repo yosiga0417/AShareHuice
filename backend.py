@@ -176,6 +176,7 @@ class BacktestRequest(BaseModel):
     plans: List[RebalancePlanInput]
     risk_free_rate: float = 0.02
     missing_data_policy: Literal["hold_cash"] = "hold_cash"
+    benchmarks: List[str] = Field(default_factory=list)
 
     @validator("plans")
     def validate_plans_not_empty(cls, value: List[RebalancePlanInput]) -> List[RebalancePlanInput]:
@@ -625,6 +626,49 @@ def fetch_symbol_close_series(symbol: str, beg: str, end: str) -> Tuple[pd.Serie
     raise RuntimeError("; ".join(errors))
 
 
+def fetch_benchmark_nav(
+    code: str, start_date: date, end_date: date
+) -> List[Dict[str, object]]:
+    beg = start_date.strftime("%Y%m%d")
+    end = end_date.strftime("%Y%m%d")
+
+    # Try index_zh_a_hist first (works for 000300, 000905, 000001, etc.)
+    for attempt in range(2):
+        try:
+            df = ak.index_zh_a_hist(symbol=code, period="daily", start_date=beg, end_date=end)
+            if df is not None and not df.empty:
+                break
+        except Exception:
+            if attempt == 0:
+                time.sleep(0.35)
+    else:
+        # Fallback: stock_zh_index_daily with exchange prefix
+        prefix = "sh" if code.startswith(("0", "9")) else "sz"
+        df = ak.stock_zh_index_daily(symbol=f"{prefix}{code}")
+        if df is not None and not df.empty:
+            df = df.rename(columns={"date": "日期", "close": "收盘"})
+            df["日期"] = pd.to_datetime(df["日期"])
+            mask = (df["日期"] >= pd.Timestamp(start_date)) & (df["日期"] <= pd.Timestamp(end_date))
+            df = df.loc[mask]
+
+    if df is None or df.empty:
+        return []
+
+    date_col = "日期" if "日期" in df.columns else df.columns[0]
+    close_col = "收盘" if "收盘" in df.columns else df.columns[4]
+
+    df = df[[date_col, close_col]].copy()
+    df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
+    df[close_col] = pd.to_numeric(df[close_col], errors="coerce")
+    df = df.dropna()
+    df = df.sort_values(date_col)
+
+    return [
+        {"date": str(row[date_col].date()), "value": float(row[close_col])}
+        for _, row in df.iterrows()
+    ]
+
+
 def map_to_next_trading_day(target: pd.Timestamp, trading_dates: pd.DatetimeIndex) -> Optional[pd.Timestamp]:
     pos = trading_dates.searchsorted(target)
     if pos >= len(trading_dates):
@@ -992,11 +1036,21 @@ def run_backtest(request: BacktestRequest) -> Dict[str, object]:
         for idx, value in nav_series.items()
     ]
 
+    # Fetch benchmark index data
+    benchmark_nav: Dict[str, object] = {}
+    for bm_code in request.benchmarks:
+        try:
+            bm_points = fetch_benchmark_nav(bm_code, request.start_date, request.end_date)
+            benchmark_nav[bm_code] = bm_points
+        except Exception as exc:  # noqa: BLE001
+            warnings.append(f"基准 {bm_code} 行情获取失败: {exc}")
+
     return {
         "data_source": "AKShare.stock_zh_a_hist(主) + stock_zh_a_hist_tx(兜底), 前复权",
         "missing_data_policy": "hold_cash: 成分股当日无行情(停牌/缺失)时记作当日收益 0，资金等效留在该头寸",
         "metrics": metrics,
         "nav": nav_points,
+        "benchmark_nav": benchmark_nav,
         "rebalance_dates": [str(dt.date()) for dt in sorted_rebalance_dates],
         "applied_rebalance_dates": applied_rebalance_dates,
         "plan_summaries": [
