@@ -34,7 +34,7 @@
     }
 
     .app {
-      max-width: 1300px;
+      max-width: 1400px;
       margin: 0 auto;
       padding: 20px 14px 28px;
     }
@@ -42,7 +42,7 @@
     .hero {
       border: 1px solid var(--border);
       border-radius: 18px;
-      padding: 20px;
+      padding: 20px 24px;
       background:
         linear-gradient(125deg, rgba(0, 87, 184, 0.12), rgba(15, 118, 110, 0.08)),
         var(--panel);
@@ -51,7 +51,7 @@
     }
 
     h1 {
-      margin: 0 0 8px;
+      margin: 0 0 6px;
       font-size: 26px;
       letter-spacing: 0.2px;
     }
@@ -62,37 +62,37 @@
       font-size: 14px;
     }
 
-    .grid {
-      display: grid;
-      grid-template-columns: 1.2fr 1fr;
-      gap: 14px;
-      align-items: start;
-    }
-
-    @media (max-width: 1080px) {
-      .grid {
-        grid-template-columns: 1fr;
-      }
-    }
-
     .panel {
       background: var(--panel);
       border: 1px solid var(--border);
       border-radius: 16px;
       box-shadow: var(--shadow);
-      padding: 14px;
+      padding: 16px 18px;
+      margin-bottom: 14px;
     }
 
     .panel h2 {
-      margin: 0 0 10px;
-      font-size: 18px;
+      margin: 0 0 12px;
+      font-size: 17px;
+      color: var(--text);
+    }
+
+    .panel-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 12px;
+    }
+
+    .panel-header h2 {
+      margin: 0;
     }
 
     .hint {
       color: var(--subtle);
       font-size: 12px;
-      margin-top: 4px;
-      line-height: 1.5;
+      margin-top: 6px;
+      line-height: 1.6;
     }
 
     .row {
@@ -106,7 +106,8 @@
     label {
       font-size: 12px;
       color: var(--subtle);
-      min-width: 74px;
+      white-space: nowrap;
+      min-width: 60px;
     }
 
     input,
@@ -123,18 +124,19 @@
     textarea {
       border: 1px solid var(--border);
       border-radius: 10px;
-      padding: 8px 10px;
+      padding: 7px 10px;
       font-size: 14px;
       color: var(--text);
       background: #fff;
     }
 
-    input[type="text"],
-    textarea {
-      width: 100%;
+    input[type="text"] {
+      flex: 1;
+      min-width: 0;
     }
 
     textarea {
+      width: 100%;
       min-height: 68px;
       resize: vertical;
     }
@@ -142,11 +144,12 @@
     button {
       border: 0;
       border-radius: 10px;
-      padding: 8px 12px;
+      padding: 7px 14px;
       background: var(--primary);
       color: #fff;
       cursor: pointer;
       font-size: 13px;
+      white-space: nowrap;
       transition: transform 120ms ease, opacity 120ms ease;
     }
 
@@ -177,24 +180,38 @@
       transform: none;
     }
 
+    /* 导入区：两栏，左控件右预览 */
+    .import-layout {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+      align-items: start;
+    }
+
+    @media (max-width: 860px) {
+      .import-layout {
+        grid-template-columns: 1fr;
+      }
+    }
+
     .table-wrap {
       overflow: auto;
       border: 1px solid var(--border);
       border-radius: 12px;
-      max-height: 280px;
+      max-height: 220px;
     }
 
     table {
       border-collapse: collapse;
       width: 100%;
-      min-width: 420px;
+      min-width: 340px;
       font-size: 13px;
     }
 
     th,
     td {
       border-bottom: 1px solid #edf2f7;
-      padding: 7px 8px;
+      padding: 7px 10px;
       text-align: left;
       vertical-align: middle;
     }
@@ -202,12 +219,33 @@
     th {
       background: #f8fafc;
       font-weight: 600;
+      position: sticky;
+      top: 0;
+      z-index: 1;
+    }
+
+    /* 回测参数横排 */
+    .params-bar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px 16px;
+      align-items: center;
+    }
+
+    .params-bar .param-group {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .params-bar label {
+      min-width: auto;
     }
 
     .plan-card {
       border: 1px solid var(--border);
       border-radius: 14px;
-      padding: 10px;
+      padding: 12px;
       background: #fdfefe;
       margin-bottom: 10px;
     }
@@ -228,7 +266,7 @@
 
     .sum-tag {
       font-size: 12px;
-      padding: 4px 8px;
+      padding: 3px 10px;
       border-radius: 999px;
       background: #ecfeff;
       color: #0f766e;
@@ -241,70 +279,97 @@
       border-color: #fed7aa;
     }
 
+    /* 指标卡片 */
     .metrics {
       display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
-      gap: 8px;
-      margin-top: 10px;
+      grid-template-columns: repeat(6, 1fr);
+      gap: 10px;
+      margin-top: 12px;
+    }
+
+    @media (max-width: 1100px) {
+      .metrics { grid-template-columns: repeat(3, 1fr); }
+    }
+
+    @media (max-width: 600px) {
+      .metrics { grid-template-columns: repeat(2, 1fr); }
     }
 
     .metric {
       border: 1px solid var(--border);
       border-radius: 12px;
-      padding: 10px;
+      padding: 12px 14px;
       background: #f8fafc;
     }
 
     .metric .name {
-      font-size: 12px;
+      font-size: 11px;
       color: var(--subtle);
-      margin-bottom: 5px;
+      margin-bottom: 6px;
+      letter-spacing: 0.2px;
     }
 
     .metric .value {
-      font-size: 20px;
-      font-weight: 600;
+      font-size: 22px;
+      font-weight: 700;
       letter-spacing: 0.2px;
     }
 
     #navChart {
-      height: 500px;
+      height: 580px;
       width: 100%;
       border: 1px solid var(--border);
       border-radius: 12px;
-      margin-top: 10px;
+      margin-top: 14px;
       background: #fff;
     }
 
     #statusBar {
-      margin-top: 6px;
+      margin-top: 4px;
       font-size: 12px;
       color: var(--subtle);
       white-space: pre-wrap;
-      line-height: 1.5;
+      line-height: 1.6;
     }
 
+    /* 兜底数据源等日志：与普通提示相同的低调样式 */
     .warning-box {
       margin-top: 8px;
-      border: 1px solid #fde68a;
+      border: 1px solid var(--border);
       border-radius: 10px;
-      background: #fffbeb;
-      padding: 8px 10px;
-      color: #92400e;
+      background: #f8fafc;
+      padding: 8px 12px;
+      color: var(--subtle);
       font-size: 12px;
       display: none;
-      line-height: 1.5;
+      line-height: 1.6;
     }
 
+    /* 回测摘要信息栏 */
     .report {
-      margin-top: 10px;
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+      gap: 10px;
+      margin-top: 14px;
+    }
+
+    .report-item {
       border: 1px solid var(--border);
-      border-radius: 12px;
+      border-radius: 10px;
+      padding: 10px 12px;
       background: #f8fafc;
-      padding: 10px;
+    }
+
+    .report-item .r-label {
+      font-size: 11px;
+      color: var(--subtle);
+      margin-bottom: 4px;
+    }
+
+    .report-item .r-value {
       font-size: 13px;
-      line-height: 1.6;
-      white-space: pre-wrap;
+      font-weight: 500;
+      color: var(--text);
     }
 
     .muted {
@@ -334,63 +399,77 @@
 </head>
 <body>
   <div class="app">
+    <!-- 标题 -->
     <div class="hero">
       <h1>A股自设指数净值回测工具</h1>
       <p>支持 Excel 成分股导入、6位代码零填充、调仓计划管理、净值回测与指标分析（数据源：AKShare）。</p>
     </div>
 
-    <div class="grid">
-      <div class="panel">
-        <h2>1. 成分股导入与调仓计划</h2>
-
-        <div class="row">
-          <label for="backendUrl">后端地址</label>
-          <input id="backendUrl" type="text" value="http://127.0.0.1:8000" />
+    <!-- 第一步：成分股导入 -->
+    <div class="panel">
+      <h2>1. 成分股导入</h2>
+      <div class="import-layout">
+        <!-- 左：操作控件 -->
+        <div>
+          <div class="row">
+            <label for="backendUrl">后端地址</label>
+            <input id="backendUrl" type="text" value="http://127.0.0.1:8000" />
+          </div>
+          <div class="row">
+            <label for="fileInput">导入文件</label>
+            <input id="fileInput" type="file" accept=".xls,.xlsx" />
+            <button id="parseFileBtn">解析 Excel</button>
+          </div>
+          <div class="row">
+            <label for="targetPlanSelect">应用到</label>
+            <select id="targetPlanSelect"></select>
+            <button id="applyPreviewBtn" class="secondary" disabled>应用到调仓计划</button>
+          </div>
+          <div class="hint" id="importSummary">未导入文件。解析时会强制保留6位股票代码（例如 002879）。</div>
         </div>
-
-        <div class="row">
-          <label for="fileInput">导入文件</label>
-          <input id="fileInput" type="file" accept=".xls,.xlsx" />
-          <button id="parseFileBtn">解析Excel</button>
+        <!-- 右：预览表格 -->
+        <div>
+          <div style="font-size:12px; color:var(--subtle); margin-bottom:6px;">解析预览（前100行）</div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th style="width:90px;">代码</th>
+                  <th>名称</th>
+                  <th style="width:90px;">权重(%)</th>
+                </tr>
+              </thead>
+              <tbody id="previewTableBody">
+                <tr><td colspan="3" class="muted">解析结果将在这里预览</td></tr>
+              </tbody>
+            </table>
+          </div>
         </div>
-        <div class="row">
-          <label for="targetPlanSelect">目标调仓计划</label>
-          <select id="targetPlanSelect"></select>
-          <button id="applyPreviewBtn" class="secondary" disabled>应用解析结果</button>
-        </div>
-        <div class="hint" id="importSummary">未导入文件。解析时会强制保留6位股票代码（例如 002879）。</div>
-
-        <div class="table-wrap" style="margin-top:8px;">
-          <table>
-            <thead>
-              <tr>
-                <th style="width:100px;">代码</th>
-                <th>名称</th>
-                <th style="width:100px;">权重(%)</th>
-              </tr>
-            </thead>
-            <tbody id="previewTableBody">
-              <tr><td colspan="3" class="muted">解析结果将在这里预览</td></tr>
-            </tbody>
-          </table>
-        </div>
-
-        <div style="display:flex; justify-content:space-between; align-items:center; margin-top:14px;">
-          <h2 style="margin:0; font-size:16px;">调仓计划列表</h2>
-          <button id="addPlanBtn" class="light">新增调仓计划（复制上一条）</button>
-        </div>
-        <div id="plansContainer" style="margin-top:8px;"></div>
       </div>
+    </div>
 
-      <div class="panel">
-        <h2>2. 回测参数与结果</h2>
-        <div class="row">
+    <!-- 第二步：调仓计划 -->
+    <div class="panel">
+      <div class="panel-header">
+        <h2>2. 调仓计划管理</h2>
+        <button id="addPlanBtn" class="light">新增调仓计划（复制上一条）</button>
+      </div>
+      <div id="plansContainer"></div>
+    </div>
+
+    <!-- 第三步：回测参数 -->
+    <div class="panel">
+      <h2>3. 回测参数</h2>
+      <div class="params-bar">
+        <div class="param-group">
           <label for="startDate">开始日期</label>
           <input id="startDate" type="date" />
+        </div>
+        <div class="param-group">
           <label for="endDate">结束日期</label>
           <input id="endDate" type="date" />
         </div>
-        <div class="row">
+        <div class="param-group">
           <label for="rebalanceMode">调仓频率</label>
           <select id="rebalanceMode">
             <option value="none">仅按调仓计划生效日</option>
@@ -399,27 +478,27 @@
             <option value="custom">自定义日期再平衡</option>
           </select>
         </div>
-        <div class="row" id="customDatesRow" style="display:none;">
-          <label for="customDates">自定义日期</label>
-          <textarea id="customDates" placeholder="每行一个日期，如：2024-03-15"></textarea>
-        </div>
-        <div class="row">
+        <div class="param-group">
           <label for="riskFreeRate">无风险利率</label>
-          <input id="riskFreeRate" type="number" min="0" step="0.001" value="0.02" />
-          <button id="runBacktestBtn">执行回测</button>
+          <input id="riskFreeRate" type="number" min="0" step="0.001" value="0.02" style="width:80px;" />
         </div>
-
-        <div class="hint">
-          缺失数据策略：停牌/缺失行情记作当日收益 0（现金持有）。
-        </div>
-
-        <div id="statusBar">等待执行回测。</div>
-        <div class="warning-box" id="warningBox"></div>
-
-        <div class="metrics" id="metricsContainer"></div>
-        <div id="navChart"></div>
-        <div class="report" id="reportBox">回测报告将在执行后生成。</div>
+        <button id="runBacktestBtn">执行回测</button>
       </div>
+      <div class="row" id="customDatesRow" style="display:none; margin-top:10px;">
+        <label for="customDates">自定义日期</label>
+        <textarea id="customDates" placeholder="每行一个日期，如：2024-03-15"></textarea>
+      </div>
+      <div class="hint">缺失数据策略：停牌/缺失行情记作当日收益 0（现金持有）。</div>
+    </div>
+
+    <!-- 第四步：回测结果 -->
+    <div class="panel">
+      <h2>4. 回测结果</h2>
+      <div id="statusBar">等待执行回测。</div>
+      <div class="warning-box" id="warningBox"></div>
+      <div class="metrics" id="metricsContainer"></div>
+      <div id="navChart"></div>
+      <div class="report" id="reportBox"></div>
     </div>
   </div>
 
@@ -918,21 +997,25 @@
     }
 
     function renderReport(result) {
-      const metrics = result.metrics || {};
       const startDate = result.nav?.[0]?.date || "-";
       const endDate = result.nav?.[result.nav.length - 1]?.date || "-";
+      const tradingDays = result.nav?.length || 0;
       const rebalanceCount = (result.applied_rebalance_dates || []).length;
 
-      const text = [
-        `回测区间：${startDate} 至 ${endDate}`,
-        `数据源：${result.data_source || "AKShare"}`,
-        `调仓执行次数：${rebalanceCount}`,
-        `区间总收益：${formatMetric(metrics.total_return, "pct")}，年化收益率：${formatMetric(metrics.annual_return, "pct")}，年化波动率：${formatMetric(metrics.annual_volatility, "pct")}`,
-        `最大回撤：${formatMetric(metrics.max_drawdown, "pct")}，夏普比率：${formatMetric(metrics.sharpe_ratio, "num")}，胜率：${formatMetric(metrics.win_rate, "pct")}`,
-        `缺失数据处理：${result.missing_data_policy || "hold_cash"}`
-      ].join("\n");
+      const items = [
+        ["回测区间", `${startDate} 至 ${endDate}`],
+        ["交易日数", `${tradingDays} 天`],
+        ["调仓执行次数", `${rebalanceCount} 次`],
+        ["数据源", result.data_source || "AKShare"],
+        ["缺失数据处理", result.missing_data_policy || "hold_cash"],
+      ];
 
-      document.getElementById("reportBox").textContent = text;
+      document.getElementById("reportBox").innerHTML = items.map(([label, value]) => `
+        <div class="report-item">
+          <div class="r-label">${label}</div>
+          <div class="r-value">${value}</div>
+        </div>
+      `).join("");
     }
 
     function collectPayload() {
