@@ -7,6 +7,7 @@
 - 回测引擎：基于 AKShare 日线（前复权）计算净值曲线。
 - 指标输出：区间总收益、年化收益、年化波动、夏普比率、最大回撤、胜率。
 - 缺失数据策略：当日无行情（停牌/缺失）按当日收益 0 处理（资金等效留在该头寸）。
+- 进度反馈：执行回测时显示成分股/基准拉取进度条，并实时显示当前耗时。
 
 ## 本地运行
 1. 安装依赖：
@@ -56,7 +57,9 @@ AUTO_OPEN_BROWSER=0 ./start.sh
 ## 接口说明（后端）
 - `GET /api/health`：健康检查
 - `POST /api/parse-components`：解析 Excel 成分股（`multipart/form-data`, 字段名 `file`）
-- `POST /api/backtest`：执行回测（JSON）
+- `POST /api/backtest`：同步执行回测（JSON）
+- `POST /api/backtest/tasks`：创建异步回测任务（JSON）
+- `GET /api/backtest/tasks/{task_id}`：获取异步回测任务进度、耗时和结果
 
 ## 备注
 - 网络环境需要能访问 AKShare 对应行情源。

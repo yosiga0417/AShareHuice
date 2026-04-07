@@ -1,14 +1,17 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, timedelta
 from decimal import Decimal, ROUND_FLOOR, ROUND_HALF_UP, getcontext
+from functools import lru_cache
 from io import BytesIO
 import json
 from pathlib import Path
 import re
+import threading
 import time
-from typing import Dict, Iterable, List, Literal, Optional, Tuple
+from typing import Callable, Dict, Iterable, List, Literal, Optional, Tuple
+import uuid
 
 import akshare as ak
 import numpy as np
@@ -25,6 +28,10 @@ BASE_DIR = Path(__file__).resolve().parent
 CACHE_ROOT = BASE_DIR / ".cache" / "akshare"
 STOCK_CACHE_DIR = CACHE_ROOT / "stock_close"
 STOCK_META_DIR = CACHE_ROOT / "stock_close_meta"
+BENCHMARK_CACHE_DIR = CACHE_ROOT / "benchmark_close"
+BENCHMARK_META_DIR = CACHE_ROOT / "benchmark_close_meta"
+DEFAULT_BENCHMARK_CODES = ["000300", "000905", "000001"]
+FileSignature = Optional[Tuple[int, int]]
 
 
 CODE_COLUMN_CANDIDATES = [
@@ -200,6 +207,42 @@ class CleanPlan:
     weight_map: Dict[str, float]  # 0~1
 
 
+ProgressCallback = Callable[[float, str, str, Optional[int], Optional[int]], None]
+StageProgressCallback = Callable[[int, int, str], None]
+
+
+@dataclass
+class BacktestTaskState:
+    task_id: str
+    status: Literal["queued", "running", "completed", "failed"] = "queued"
+    progress: float = 0.0
+    stage: str = "queued"
+    message: str = "任务已创建，等待执行。"
+    current_step: Optional[int] = None
+    total_steps: Optional[int] = None
+    started_monotonic: float = field(default_factory=time.monotonic)
+    updated_monotonic: float = field(default_factory=time.monotonic)
+    finished_monotonic: Optional[float] = None
+    result: Optional[Dict[str, object]] = None
+    error: Optional[str] = None
+
+
+BACKTEST_TASKS: Dict[str, BacktestTaskState] = {}
+BACKTEST_TASKS_LOCK = threading.Lock()
+BACKTEST_TASK_TTL_SECONDS = 3600
+BACKTEST_STAGE_LABELS = {
+    "queued": "等待执行",
+    "prepare": "准备参数",
+    "fetch_prices": "拉取成分股行情",
+    "align_plans": "整理交易与调仓",
+    "compute": "计算净值与指标",
+    "fetch_benchmarks": "拉取基准行情",
+    "finalize": "整理结果",
+    "completed": "已完成",
+    "failed": "执行失败",
+}
+
+
 app = FastAPI(
     title="A股自设指数回测服务",
     description="基于 AKShare 的 A 股成分股指数回测与分析服务",
@@ -215,9 +258,103 @@ app.add_middleware(
 )
 
 
+def prune_backtest_tasks() -> None:
+    now = time.monotonic()
+    with BACKTEST_TASKS_LOCK:
+        expired_ids = [
+            task_id
+            for task_id, task in BACKTEST_TASKS.items()
+            if task.finished_monotonic is not None
+            and now - task.finished_monotonic > BACKTEST_TASK_TTL_SECONDS
+        ]
+        for task_id in expired_ids:
+            BACKTEST_TASKS.pop(task_id, None)
+
+
+def create_backtest_task() -> BacktestTaskState:
+    prune_backtest_tasks()
+    task = BacktestTaskState(task_id=uuid.uuid4().hex)
+    with BACKTEST_TASKS_LOCK:
+        BACKTEST_TASKS[task.task_id] = task
+    return task
+
+
+def update_backtest_task(
+    task_id: str,
+    *,
+    status: Optional[str] = None,
+    progress: Optional[float] = None,
+    stage: Optional[str] = None,
+    message: Optional[str] = None,
+    current_step: Optional[int] = None,
+    total_steps: Optional[int] = None,
+    result: Optional[Dict[str, object]] = None,
+    error: Optional[str] = None,
+) -> None:
+    now = time.monotonic()
+    with BACKTEST_TASKS_LOCK:
+        task = BACKTEST_TASKS.get(task_id)
+        if task is None:
+            return
+
+        if status is not None:
+            task.status = status
+        if progress is not None:
+            task.progress = max(0.0, min(1.0, float(progress)))
+        if stage is not None:
+            task.stage = stage
+        if message is not None:
+            task.message = message
+        if current_step is not None or total_steps is not None:
+            task.current_step = current_step
+            task.total_steps = total_steps
+        if result is not None:
+            task.result = result
+        if error is not None:
+            task.error = error
+
+        task.updated_monotonic = now
+        if task.status in {"completed", "failed"}:
+            task.finished_monotonic = now
+
+
+def get_backtest_task_payload(task_id: str) -> Dict[str, object]:
+    prune_backtest_tasks()
+    with BACKTEST_TASKS_LOCK:
+        task = BACKTEST_TASKS.get(task_id)
+        if task is None:
+            raise HTTPException(status_code=404, detail="未找到对应的回测任务")
+
+        elapsed_seconds = max(
+            0.0,
+            (task.finished_monotonic or time.monotonic()) - task.started_monotonic,
+        )
+        payload: Dict[str, object] = {
+            "task_id": task.task_id,
+            "status": task.status,
+            "stage": task.stage,
+            "stage_label": BACKTEST_STAGE_LABELS.get(task.stage, task.stage),
+            "message": task.message,
+            "progress_pct": round(task.progress * 100, 1),
+            "elapsed_seconds": round(elapsed_seconds, 1),
+            "current_step": task.current_step,
+            "total_steps": task.total_steps,
+        }
+        if task.result is not None:
+            payload["result"] = task.result
+        if task.error is not None:
+            payload["error"] = task.error
+        return payload
+
+
 def ensure_stock_cache_dirs() -> None:
     STOCK_CACHE_DIR.mkdir(parents=True, exist_ok=True)
     STOCK_META_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def ensure_benchmark_cache_dirs() -> None:
+    BENCHMARK_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    BENCHMARK_META_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def stock_cache_file(symbol: str) -> Path:
@@ -226,6 +363,23 @@ def stock_cache_file(symbol: str) -> Path:
 
 def stock_cache_meta_file(symbol: str) -> Path:
     return STOCK_META_DIR / f"{symbol}.json"
+
+
+def benchmark_cache_file(code: str) -> Path:
+    return BENCHMARK_CACHE_DIR / f"{code}.csv"
+
+
+def benchmark_cache_meta_file(code: str) -> Path:
+    return BENCHMARK_META_DIR / f"{code}.json"
+
+
+def file_signature(path: Path) -> FileSignature:
+    try:
+        stat = path.stat()
+    except FileNotFoundError:
+        return None
+
+    return stat.st_mtime_ns, stat.st_size
 
 
 def normalize_price_series(series: pd.Series) -> pd.Series:
@@ -251,30 +405,61 @@ def merge_price_series(base: pd.Series, incoming: pd.Series) -> pd.Series:
     return normalize_price_series(pd.concat([base, incoming]))
 
 
-def load_cached_stock_series(symbol: str) -> pd.Series:
-    cache_path = stock_cache_file(symbol)
-    if not cache_path.exists():
+def load_cached_series(cache_path: Path) -> pd.Series:
+    return _load_cached_series(str(cache_path), file_signature(cache_path))
+
+
+@lru_cache(maxsize=1024)
+def _load_cached_series(cache_path_str: str, signature: FileSignature) -> pd.Series:
+    if signature is None:
         return pd.Series(dtype="float64", name="close")
 
+    cache_path = Path(cache_path_str)
     try:
-        df = pd.read_csv(cache_path)
+        df = pd.read_csv(
+            cache_path,
+            usecols=["date", "close"],
+            dtype={"date": "string", "close": "float64"},
+        )
     except Exception:  # noqa: BLE001
         return pd.Series(dtype="float64", name="close")
 
-    if df.empty or "date" not in df.columns or "close" not in df.columns:
+    if df.empty:
         return pd.Series(dtype="float64", name="close")
 
-    series = pd.Series(df["close"].to_numpy(), index=df["date"])
-    return normalize_price_series(series)
+    date_index = pd.to_datetime(df["date"], format="%Y-%m-%d", errors="coerce")
+    close_values = pd.to_numeric(df["close"], errors="coerce")
+    valid_mask = date_index.notna() & close_values.notna()
+    if not valid_mask.any():
+        return pd.Series(dtype="float64", name="close")
+
+    series = pd.Series(
+        close_values.loc[valid_mask].to_numpy(dtype="float64", copy=False),
+        index=date_index.loc[valid_mask].to_numpy(copy=False),
+        name="close",
+    )
+    if series.index.has_duplicates:
+        series = series[~series.index.duplicated(keep="last")]
+
+    return series.sort_index()
 
 
-def save_cached_stock_series(symbol: str, series: pd.Series) -> None:
-    ensure_stock_cache_dirs()
+def save_cached_series(cache_path: Path, series: pd.Series) -> None:
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
     clean_series = normalize_price_series(series)
     df = clean_series.rename("close").reset_index()
     df.columns = ["date", "close"]
     df["date"] = df["date"].dt.strftime("%Y-%m-%d")
-    df.to_csv(stock_cache_file(symbol), index=False)
+    df.to_csv(cache_path, index=False)
+
+
+def load_cached_stock_series(symbol: str) -> pd.Series:
+    return load_cached_series(stock_cache_file(symbol))
+
+
+def save_cached_stock_series(symbol: str, series: pd.Series) -> None:
+    ensure_stock_cache_dirs()
+    save_cached_series(stock_cache_file(symbol), series)
 
 
 def normalize_cached_ranges(ranges: Iterable[Tuple[date, date]]) -> List[Tuple[date, date]]:
@@ -293,16 +478,29 @@ def normalize_cached_ranges(ranges: Iterable[Tuple[date, date]]) -> List[Tuple[d
     return normalized
 
 
-def load_cached_stock_ranges(symbol: str) -> List[Tuple[date, date]]:
-    cache_path = stock_cache_file(symbol)
-    meta_path = stock_cache_meta_file(symbol)
-    if not cache_path.exists() or not meta_path.exists():
-        return []
+def load_cached_ranges(cache_path: Path, meta_path: Path) -> List[Tuple[date, date]]:
+    ranges = _load_cached_ranges(
+        str(meta_path),
+        file_signature(cache_path),
+        file_signature(meta_path),
+    )
+    return list(ranges)
 
+
+@lru_cache(maxsize=1024)
+def _load_cached_ranges(
+    meta_path_str: str,
+    cache_signature: FileSignature,
+    meta_signature: FileSignature,
+) -> Tuple[Tuple[date, date], ...]:
+    if cache_signature is None or meta_signature is None:
+        return ()
+
+    meta_path = Path(meta_path_str)
     try:
         payload = json.loads(meta_path.read_text(encoding="utf-8"))
     except Exception:  # noqa: BLE001
-        return []
+        return ()
 
     ranges: List[Tuple[date, date]] = []
     for item in payload.get("ranges", []):
@@ -316,21 +514,48 @@ def load_cached_stock_ranges(symbol: str) -> List[Tuple[date, date]]:
         if start_date <= end_date:
             ranges.append((start_date, end_date))
 
-    return normalize_cached_ranges(ranges)
+    return tuple(normalize_cached_ranges(ranges))
 
 
-def save_cached_stock_ranges(symbol: str, ranges: Iterable[Tuple[date, date]]) -> None:
-    ensure_stock_cache_dirs()
+def save_cached_ranges(meta_path: Path, ranges: Iterable[Tuple[date, date]]) -> None:
+    meta_path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "ranges": [
             {"start": start_date.isoformat(), "end": end_date.isoformat()}
             for start_date, end_date in normalize_cached_ranges(ranges)
         ]
     }
-    stock_cache_meta_file(symbol).write_text(
+    meta_path.write_text(
         json.dumps(payload, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+
+
+def load_cached_stock_ranges(symbol: str) -> List[Tuple[date, date]]:
+    return load_cached_ranges(stock_cache_file(symbol), stock_cache_meta_file(symbol))
+
+
+def save_cached_stock_ranges(symbol: str, ranges: Iterable[Tuple[date, date]]) -> None:
+    ensure_stock_cache_dirs()
+    save_cached_ranges(stock_cache_meta_file(symbol), ranges)
+
+
+def load_cached_benchmark_series(code: str) -> pd.Series:
+    return load_cached_series(benchmark_cache_file(code))
+
+
+def save_cached_benchmark_series(code: str, series: pd.Series) -> None:
+    ensure_benchmark_cache_dirs()
+    save_cached_series(benchmark_cache_file(code), series)
+
+
+def load_cached_benchmark_ranges(code: str) -> List[Tuple[date, date]]:
+    return load_cached_ranges(benchmark_cache_file(code), benchmark_cache_meta_file(code))
+
+
+def save_cached_benchmark_ranges(code: str, ranges: Iterable[Tuple[date, date]]) -> None:
+    ensure_benchmark_cache_dirs()
+    save_cached_ranges(benchmark_cache_meta_file(code), ranges)
 
 
 def compute_missing_ranges(
@@ -396,7 +621,16 @@ def slice_price_series(series: pd.Series, start_date: date, end_date: date) -> p
         return pd.Series(dtype="float64", name="close")
 
     mask = (series.index >= pd.Timestamp(start_date)) & (series.index <= pd.Timestamp(end_date))
-    return normalize_price_series(series.loc[mask])
+    out = series.loc[mask]
+    if out.empty:
+        return pd.Series(dtype="float64", name="close")
+
+    out = out.dropna()
+    out.name = "close"
+    if out.index.is_monotonic_increasing and not out.index.has_duplicates:
+        return out.astype(float, copy=False)
+
+    return normalize_price_series(out)
 
 
 def normalize_stock_code(raw_code: object) -> str:
@@ -686,12 +920,21 @@ def build_clean_plans(plans: List[RebalancePlanInput]) -> List[CleanPlan]:
 
 
 def fetch_close_prices(
-    symbols: List[str], start_date: date, end_date: date
+    symbols: List[str],
+    start_date: date,
+    end_date: date,
+    progress_callback: Optional[StageProgressCallback] = None,
 ) -> Tuple[pd.DataFrame, List[str]]:
     frames: Dict[str, pd.Series] = {}
     warnings: List[str] = []
+    total_symbols = len(symbols)
 
-    for symbol in symbols:
+    if progress_callback is not None:
+        progress_callback(0, total_symbols, f"开始拉取 {total_symbols} 只成分股行情…")
+
+    for idx, symbol in enumerate(symbols, start=1):
+        if progress_callback is not None:
+            progress_callback(idx - 1, total_symbols, f"正在拉取成分股 {symbol}（{idx}/{total_symbols}）…")
         try:
             series, source = fetch_symbol_close_series(symbol, start_date, end_date)
             frames[symbol] = series
@@ -699,7 +942,9 @@ def fetch_close_prices(
                 warnings.append(f"{symbol} 使用兜底数据源 {source}")
         except Exception as exc:  # noqa: BLE001
             warnings.append(f"{symbol} 行情获取失败: {exc}")
-            continue
+        finally:
+            if progress_callback is not None:
+                progress_callback(idx, total_symbols, f"已处理成分股 {symbol}（{idx}/{total_symbols}）")
 
     if not frames:
         raise HTTPException(status_code=400, detail="无法获取任何成分股行情，请检查代码与网络连接")
@@ -877,47 +1122,89 @@ def fetch_symbol_close_series(
     return result, "cache"
 
 
-def fetch_benchmark_nav(
+def fetch_benchmark_close_series_remote(
     code: str, start_date: date, end_date: date
-) -> List[Dict[str, object]]:
+) -> pd.Series:
     beg = start_date.strftime("%Y%m%d")
     end = end_date.strftime("%Y%m%d")
 
-    # Try index_zh_a_hist first (works for 000300, 000905, 000001, etc.)
+    last_error: Optional[Exception] = None
+
     for attempt in range(2):
         try:
             df = ak.index_zh_a_hist(symbol=code, period="daily", start_date=beg, end_date=end)
-            if df is not None and not df.empty:
-                break
-        except Exception:
-            if attempt == 0:
+            if df is None or df.empty:
+                raise ValueError("返回数据为空")
+            return extract_date_close_series(df)
+        except Exception as exc:  # noqa: BLE001
+            last_error = exc
+            if attempt < 1:
                 time.sleep(0.35)
-    else:
-        # Fallback: stock_zh_index_daily with exchange prefix
-        prefix = "sh" if code.startswith(("0", "9")) else "sz"
+
+    prefix = "sh" if code.startswith(("0", "9")) else "sz"
+    try:
         df = ak.stock_zh_index_daily(symbol=f"{prefix}{code}")
-        if df is not None and not df.empty:
-            df = df.rename(columns={"date": "日期", "close": "收盘"})
-            df["日期"] = pd.to_datetime(df["日期"])
-            mask = (df["日期"] >= pd.Timestamp(start_date)) & (df["日期"] <= pd.Timestamp(end_date))
-            df = df.loc[mask]
+        if df is None or df.empty:
+            raise ValueError("返回数据为空")
+        df = df.rename(columns={"date": "日期", "close": "收盘"})
+        df["日期"] = pd.to_datetime(df["日期"], errors="coerce")
+        mask = (df["日期"] >= pd.Timestamp(start_date)) & (df["日期"] <= pd.Timestamp(end_date))
+        df = df.loc[mask]
+        return extract_date_close_series(df)
+    except Exception as exc:  # noqa: BLE001
+        details = [str(item) for item in [last_error, exc] if item is not None]
+        raise RuntimeError("; ".join(details) or f"基准 {code} 行情获取失败") from exc
 
-    if df is None or df.empty:
-        return []
 
-    date_col = "日期" if "日期" in df.columns else df.columns[0]
-    close_col = "收盘" if "收盘" in df.columns else df.columns[4]
+def fetch_benchmark_nav(
+    code: str, start_date: date, end_date: date
+) -> List[Dict[str, object]]:
+    request_start = pd.Timestamp(start_date).date()
+    request_end = pd.Timestamp(end_date).date()
+    if request_start > request_end:
+        raise ValueError("开始日期不能晚于结束日期")
 
-    df = df[[date_col, close_col]].copy()
-    df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
-    df[close_col] = pd.to_numeric(df[close_col], errors="coerce")
-    df = df.dropna()
-    df = df.sort_values(date_col)
+    cached_series = load_cached_benchmark_series(code)
+    cached_ranges = load_cached_benchmark_ranges(code)
+    cache_dirty = False
+    ranges_dirty = False
+
+    missing_ranges = compute_missing_ranges(request_start, request_end, cached_ranges)
+    for gap_start, gap_end in missing_ranges:
+        fetch_start, fetch_end = expand_fetch_range(gap_start, gap_end, cached_ranges)
+        gap_series = fetch_benchmark_close_series_remote(code, fetch_start, fetch_end)
+        cached_series = merge_price_series(cached_series, gap_series)
+        cached_ranges = normalize_cached_ranges(cached_ranges + [(gap_start, gap_end)])
+        cache_dirty = True
+        ranges_dirty = True
+
+    if cache_dirty:
+        save_cached_benchmark_series(code, cached_series)
+    if ranges_dirty:
+        save_cached_benchmark_ranges(code, cached_ranges)
+
+    result = slice_price_series(cached_series, request_start, request_end)
+    if result.empty:
+        raise RuntimeError("区间内没有可用基准行情")
 
     return [
-        {"date": str(row[date_col].date()), "value": float(row[close_col])}
-        for _, row in df.iterrows()
+        {"date": str(pd.Timestamp(idx).date()), "value": float(round(value, 8))}
+        for idx, value in result.items()
     ]
+
+
+def build_benchmark_fetch_codes(requested_codes: Iterable[str]) -> List[str]:
+    ordered_codes: List[str] = []
+    seen: set[str] = set()
+
+    for raw_code in [*DEFAULT_BENCHMARK_CODES, *requested_codes]:
+        code = str(raw_code).strip()
+        if not code or code in seen:
+            continue
+        seen.add(code)
+        ordered_codes.append(code)
+
+    return ordered_codes
 
 
 def map_to_next_trading_day(target: pd.Timestamp, trading_dates: pd.DatetimeIndex) -> Optional[pd.Timestamp]:
@@ -1018,49 +1305,88 @@ def drop_unavailable_symbols(
     return clean, warnings
 
 
+def build_plan_weight_vector(
+    weight_map: Dict[str, float],
+    symbol_index: Dict[str, int],
+    symbol_count: int,
+) -> np.ndarray:
+    vector = np.zeros(symbol_count, dtype=np.float64)
+    for code, weight in weight_map.items():
+        idx = symbol_index.get(code)
+        if idx is not None:
+            vector[idx] = float(weight)
+    return vector
+
+
 def compute_nav_series(
     close_df: pd.DataFrame,
     plans: List[CleanPlan],
     rebalance_dates: List[pd.Timestamp],
 ) -> Tuple[pd.Series, List[str]]:
     trading_dates = close_df.index
-    returns = close_df.pct_change().replace([np.inf, -np.inf], np.nan)
-    rebalance_set = {pd.Timestamp(d) for d in rebalance_dates}
+    returns_array = close_df.pct_change().replace([np.inf, -np.inf], np.nan).to_numpy(
+        dtype=np.float64,
+        copy=False,
+    )
+    symbol_index = {code: idx for idx, code in enumerate(close_df.columns)}
+    symbol_count = len(symbol_index)
 
-    active = active_plan_for_date(plans, pd.Timestamp(trading_dates[0]))
-    weights = dict(active.weight_map)
+    plan_vectors = [
+        (
+            plan.effective_date,
+            build_plan_weight_vector(plan.weight_map, symbol_index, symbol_count),
+        )
+        for plan in plans
+    ]
 
-    nav_values = [1.0]
-    applied_rebalances = [str(pd.Timestamp(trading_dates[0]).date())]
+    first_trade_day = pd.Timestamp(trading_dates[0])
+    active_plan_idx = 0
+    for idx, (effective_date, _) in enumerate(plan_vectors):
+        if effective_date <= first_trade_day:
+            active_plan_idx = idx
+        else:
+            break
+
+    weights = plan_vectors[active_plan_idx][1].copy()
+    rebalance_schedule: Dict[int, np.ndarray] = {}
+    for rebalance_day in sorted({pd.Timestamp(d) for d in rebalance_dates}):
+        pos = trading_dates.searchsorted(rebalance_day)
+        if pos >= len(trading_dates) or pd.Timestamp(trading_dates[pos]) != rebalance_day:
+            continue
+        if pos == 0:
+            continue
+
+        while active_plan_idx + 1 < len(plan_vectors) and plan_vectors[active_plan_idx + 1][0] <= rebalance_day:
+            active_plan_idx += 1
+        rebalance_schedule[pos] = plan_vectors[active_plan_idx][1]
+
+    nav_values = np.empty(len(trading_dates), dtype=np.float64)
+    nav_values[0] = 1.0
+    applied_rebalances = [str(first_trade_day.date())]
+    position_values = np.empty(symbol_count, dtype=np.float64)
 
     for idx in range(1, len(trading_dates)):
-        current_date = pd.Timestamp(trading_dates[idx])
-        today_ret = returns.iloc[idx]
+        today_ret = returns_array[idx]
+        valid_mask = np.isfinite(today_ret)
 
-        portfolio_ret = 0.0
-        for code, weight in weights.items():
-            stock_ret = today_ret.get(code)
-            if pd.notna(stock_ret):
-                portfolio_ret += weight * float(stock_ret)
+        if valid_mask.any():
+            portfolio_ret = float(np.dot(weights[valid_mask], today_ret[valid_mask]))
+        else:
+            portfolio_ret = 0.0
+        nav_values[idx] = nav_values[idx - 1] * (1.0 + portfolio_ret)
 
-        nav_values.append(nav_values[-1] * (1.0 + portfolio_ret))
+        np.copyto(position_values, weights)
+        if valid_mask.any():
+            position_values[valid_mask] *= 1.0 + today_ret[valid_mask]
+        np.maximum(position_values, 0.0, out=position_values)
 
-        value_map: Dict[str, float] = {}
-        total_value = 0.0
-        for code, weight in weights.items():
-            stock_ret = today_ret.get(code)
-            growth = 1.0 + float(stock_ret) if pd.notna(stock_ret) else 1.0
-            position_value = max(weight * growth, 0.0)
-            value_map[code] = position_value
-            total_value += position_value
+        total_value = float(position_values.sum())
+        if total_value > 0.0:
+            weights = position_values / total_value
 
-        if total_value > 0:
-            weights = {code: value / total_value for code, value in value_map.items() if value > 0}
-
-        if current_date in rebalance_set:
-            active = active_plan_for_date(plans, current_date)
-            weights = dict(active.weight_map)
-            applied_rebalances.append(str(current_date.date()))
+        if idx in rebalance_schedule:
+            weights = rebalance_schedule[idx].copy()
+            applied_rebalances.append(str(pd.Timestamp(trading_dates[idx]).date()))
 
     nav_series = pd.Series(nav_values, index=trading_dates, name="nav")
     return nav_series, applied_rebalances
@@ -1236,8 +1562,23 @@ async def parse_components(file: UploadFile = File(...)) -> Dict[str, object]:
     }
 
 
-@app.post("/api/backtest")
-def run_backtest(request: BacktestRequest) -> Dict[str, object]:
+def execute_backtest(
+    request: BacktestRequest,
+    progress_callback: Optional[ProgressCallback] = None,
+) -> Dict[str, object]:
+    def report(
+        progress: float,
+        stage: str,
+        message: str,
+        current_step: Optional[int] = None,
+        total_steps: Optional[int] = None,
+    ) -> None:
+        if progress_callback is None:
+            return
+        progress_callback(progress, stage, message, current_step, total_steps)
+
+    report(0.01, "prepare", "正在校验回测参数…")
+
     if request.start_date >= request.end_date:
         raise HTTPException(status_code=400, detail="回测开始日期必须早于结束日期")
 
@@ -1249,9 +1590,21 @@ def run_backtest(request: BacktestRequest) -> Dict[str, object]:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     all_symbols = sorted({code for plan in plans for code in plan.weight_map})
-    close_df, data_warnings = fetch_close_prices(all_symbols, request.start_date, request.end_date)
+    report(0.05, "prepare", f"参数校验完成，待拉取 {len(all_symbols)} 只成分股行情。", 0, len(all_symbols))
+
+    def on_symbol_progress(done: int, total: int, message: str) -> None:
+        fraction = 1.0 if total <= 0 else done / total
+        report(0.05 + 0.65 * fraction, "fetch_prices", message, done, total)
+
+    close_df, data_warnings = fetch_close_prices(
+        all_symbols,
+        request.start_date,
+        request.end_date,
+        progress_callback=on_symbol_progress,
+    )
     warnings.extend(data_warnings)
 
+    report(0.74, "align_plans", "正在剔除无有效行情的成分股…")
     filtered_plans, plan_warnings = drop_unavailable_symbols(plans, close_df)
     warnings.extend(plan_warnings)
 
@@ -1259,6 +1612,7 @@ def run_backtest(request: BacktestRequest) -> Dict[str, object]:
     if len(trading_dates) < 2:
         raise HTTPException(status_code=400, detail="交易日数量不足，无法完成回测")
 
+    report(0.80, "align_plans", "正在对齐交易日与调仓计划…")
     aligned_plans = align_plan_dates_to_trading_days(
         filtered_plans,
         trading_dates,
@@ -1279,6 +1633,7 @@ def run_backtest(request: BacktestRequest) -> Dict[str, object]:
         all_rebalance_dates.add(dt)
 
     sorted_rebalance_dates = sorted(all_rebalance_dates)
+    report(0.88, "compute", "正在计算净值曲线与绩效指标…")
     nav_series, applied_rebalance_dates = compute_nav_series(close_df, aligned_plans, sorted_rebalance_dates)
     metrics = compute_metrics(nav_series, request.risk_free_rate)
 
@@ -1289,14 +1644,34 @@ def run_backtest(request: BacktestRequest) -> Dict[str, object]:
 
     # Fetch benchmark index data
     benchmark_nav: Dict[str, object] = {}
-    for bm_code in request.benchmarks:
+    requested_benchmark_codes = set(request.benchmarks)
+    benchmark_fetch_codes = build_benchmark_fetch_codes(request.benchmarks)
+    total_benchmarks = len(benchmark_fetch_codes)
+    for idx, bm_code in enumerate(benchmark_fetch_codes, start=1):
+        report(
+            0.90 + 0.08 * ((idx - 1) / total_benchmarks if total_benchmarks else 1.0),
+            "fetch_benchmarks",
+            f"正在拉取基准 {bm_code}（{idx}/{total_benchmarks}）…",
+            idx - 1,
+            total_benchmarks,
+        )
         try:
             bm_points = fetch_benchmark_nav(bm_code, request.start_date, request.end_date)
             benchmark_nav[bm_code] = bm_points
         except Exception as exc:  # noqa: BLE001
-            warnings.append(f"基准 {bm_code} 行情获取失败: {exc}")
+            warning_prefix = "基准" if bm_code in requested_benchmark_codes else "预载基准"
+            warnings.append(f"{warning_prefix} {bm_code} 行情获取失败: {exc}")
+        report(
+            0.90 + 0.08 * (idx / total_benchmarks if total_benchmarks else 1.0),
+            "fetch_benchmarks",
+            f"已处理基准 {bm_code}（{idx}/{total_benchmarks}）",
+            idx,
+            total_benchmarks,
+        )
 
-    return {
+    report(0.99, "finalize", "正在整理回测结果…")
+
+    result = {
         "data_source": "AKShare.stock_zh_a_hist(主) + stock_zh_a_hist_tx(兜底), 前复权",
         "missing_data_policy": "hold_cash: 成分股当日无行情(停牌/缺失)时记作当日收益 0，资金等效留在该头寸",
         "metrics": metrics,
@@ -1313,6 +1688,92 @@ def run_backtest(request: BacktestRequest) -> Dict[str, object]:
         ],
         "warnings": warnings,
     }
+    report(1.0, "completed", "回测完成。")
+    return result
+
+
+def run_backtest_task(task_id: str, request: BacktestRequest) -> None:
+    def on_progress(
+        progress: float,
+        stage: str,
+        message: str,
+        current_step: Optional[int],
+        total_steps: Optional[int],
+    ) -> None:
+        update_backtest_task(
+            task_id,
+            status="running",
+            progress=progress,
+            stage=stage,
+            message=message,
+            current_step=current_step,
+            total_steps=total_steps,
+        )
+
+    update_backtest_task(
+        task_id,
+        status="running",
+        progress=0.0,
+        stage="queued",
+        message="任务已启动，等待执行。",
+        current_step=0,
+        total_steps=0,
+    )
+
+    try:
+        result = execute_backtest(request, progress_callback=on_progress)
+    except HTTPException as exc:
+        error = str(exc.detail)
+        update_backtest_task(
+            task_id,
+            status="failed",
+            stage="failed",
+            message=f"回测失败：{error}",
+            current_step=0,
+            total_steps=0,
+            error=error,
+        )
+    except Exception as exc:  # noqa: BLE001
+        error = str(exc)
+        update_backtest_task(
+            task_id,
+            status="failed",
+            stage="failed",
+            message=f"回测失败：{error}",
+            current_step=0,
+            total_steps=0,
+            error=error,
+        )
+    else:
+        update_backtest_task(
+            task_id,
+            status="completed",
+            progress=1.0,
+            stage="completed",
+            message="回测完成。",
+            current_step=0,
+            total_steps=0,
+            result=result,
+            error=None,
+        )
+
+
+@app.post("/api/backtest")
+def run_backtest(request: BacktestRequest) -> Dict[str, object]:
+    return execute_backtest(request)
+
+
+@app.post("/api/backtest/tasks")
+def create_backtest_task_api(request: BacktestRequest) -> Dict[str, str]:
+    task = create_backtest_task()
+    worker = threading.Thread(target=run_backtest_task, args=(task.task_id, request), daemon=True)
+    worker.start()
+    return {"task_id": task.task_id}
+
+
+@app.get("/api/backtest/tasks/{task_id}")
+def get_backtest_task_api(task_id: str) -> Dict[str, object]:
+    return get_backtest_task_payload(task_id)
 
 
 if __name__ == "__main__":

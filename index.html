@@ -337,6 +337,54 @@
     .report-item .r-label { font-size: 11px; color: var(--subtle); margin-bottom: 3px; }
     .report-item .r-value { font-size: 12px; font-weight: 500; }
 
+    /* ── Backtest notes ── */
+    .notes-panel {
+      margin-top: 12px;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: #fbfcfe;
+      overflow: hidden;
+    }
+
+    .notes-summary {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      padding: 9px 12px;
+      cursor: pointer;
+      list-style: none;
+      color: var(--subtle);
+      font-size: 12px;
+      user-select: none;
+    }
+
+    .notes-summary::-webkit-details-marker { display: none; }
+
+    .notes-panel[open] .notes-summary {
+      color: var(--text);
+      background: #f8fafc;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .notes-summary .chevron {
+      font-size: 10px;
+      transition: transform 200ms ease;
+    }
+
+    .notes-panel[open] .notes-summary .chevron {
+      transform: rotate(180deg);
+    }
+
+    .notes-body {
+      padding: 10px 12px 12px;
+      color: var(--subtle);
+      font-size: 12px;
+      line-height: 1.7;
+    }
+
+    .notes-body p { margin: 0 0 8px; }
+    .notes-body p:last-child { margin-bottom: 0; }
+
     /* ── Status bar & warnings ── */
     #statusBar {
       font-size: 12px;
@@ -344,6 +392,85 @@
       margin-bottom: 8px;
       line-height: 1.6;
       min-height: 18px;
+    }
+
+    .progress-panel {
+      display: none;
+      margin-bottom: 10px;
+      padding: 10px 12px;
+      border: 1px solid var(--border);
+      border-radius: 11px;
+      background: linear-gradient(180deg, #f8fbff 0%, #f4f8fc 100%);
+    }
+
+    .progress-panel[data-status="completed"] {
+      background: linear-gradient(180deg, #f3fcf7 0%, #effcf5 100%);
+      border-color: #bbf7d0;
+    }
+
+    .progress-panel[data-status="failed"] {
+      background: linear-gradient(180deg, #fff7f7 0%, #fff1f2 100%);
+      border-color: #fecaca;
+    }
+
+    .progress-head,
+    .progress-meta {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    .progress-head {
+      margin-bottom: 7px;
+      font-size: 12px;
+    }
+
+    .progress-stage {
+      font-weight: 600;
+      color: var(--text);
+    }
+
+    .progress-percent {
+      font-weight: 700;
+      color: var(--primary);
+      font-variant-numeric: tabular-nums;
+    }
+
+    .progress-track {
+      height: 10px;
+      border-radius: 999px;
+      background: #dbe7f5;
+      overflow: hidden;
+    }
+
+    .progress-fill {
+      width: 0;
+      height: 100%;
+      border-radius: inherit;
+      background: linear-gradient(90deg, #0057b8 0%, #0f766e 100%);
+      transition: width 220ms ease;
+    }
+
+    .progress-panel[data-status="completed"] .progress-fill {
+      background: linear-gradient(90deg, #0f766e 0%, #22c55e 100%);
+    }
+
+    .progress-panel[data-status="failed"] .progress-fill {
+      background: linear-gradient(90deg, #dc2626 0%, #f97316 100%);
+    }
+
+    .progress-meta {
+      margin-top: 7px;
+      font-size: 11.5px;
+      color: var(--subtle);
+      line-height: 1.5;
+    }
+
+    .progress-elapsed {
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
     }
 
     .warning-box {
@@ -621,7 +748,6 @@
         <label style="display:block; margin-bottom:3px; font-size:11px;">再平衡日期（每行一个）</label>
         <textarea id="customDates" placeholder="2024-03-15&#10;2024-06-15"></textarea>
       </div>
-      <div class="hint" style="margin-bottom:6px;">停牌/缺失行情记作当日收益 0（现金持有）。</div>
       <button class="adv-toggle" id="advToggle">▸ 高级设置</button>
       <div class="adv-body" id="advBody">
         <div class="row" style="margin-top:4px;">
@@ -643,6 +769,19 @@
         <button id="exportImgBtn" class="light" style="font-size:11px;padding:4px 9px;" disabled title="保存图表为 PNG">↓ 截图</button>
       </div>
       <div id="statusBar">等待执行回测。</div>
+      <div class="progress-panel" id="progressPanel" data-status="queued">
+        <div class="progress-head">
+          <span class="progress-stage" id="progressStage">等待执行</span>
+          <span class="progress-percent" id="progressPercent">0%</span>
+        </div>
+        <div class="progress-track">
+          <div class="progress-fill" id="progressFill"></div>
+        </div>
+        <div class="progress-meta">
+          <span id="progressDetail">尚未开始。</span>
+          <span class="progress-elapsed" id="progressElapsed">当前耗时：0.0 秒</span>
+        </div>
+      </div>
       <div class="warning-box" id="warningBox"></div>
       <div class="metrics" id="metricsContainer"></div>
       <div class="benchmark-bar" id="benchmarkBar">
@@ -666,6 +805,13 @@
         <div id="fallbackLogBody"></div>
       </div>
       <div class="report" id="reportBox"></div>
+      <details class="notes-panel">
+        <summary class="notes-summary">
+          <span class="chevron">▾</span>
+          <span>回测说明</span>
+        </summary>
+        <div class="notes-body" id="backtestNotesBody"></div>
+      </details>
     </div>
   </main>
 
@@ -689,6 +835,7 @@
     nextPlanId: 1,
     nextRowId: 1,
     lastResult: null,
+    backtestProgress: null,
     expandedPlans: new Set()
   };
 
@@ -784,6 +931,21 @@
 
   function getBackendUrl() {
     return document.getElementById("backendUrl").value.trim().replace(/\/$/, "");
+  }
+
+  function sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  function formatElapsed(seconds) {
+    const value = Math.max(0, Number(seconds) || 0);
+    if (value < 60) return `${value.toFixed(1)} 秒`;
+    const whole = Math.round(value);
+    const hours = Math.floor(whole / 3600);
+    const minutes = Math.floor((whole % 3600) / 60);
+    const secs = whole % 60;
+    if (hours > 0) return `${hours} 小时 ${String(minutes).padStart(2, "0")} 分 ${String(secs).padStart(2, "0")} 秒`;
+    return `${minutes} 分 ${String(secs).padStart(2, "0")} 秒`;
   }
 
   /* ────────────────────────────────────────────────
@@ -997,6 +1159,43 @@
     document.getElementById("statusBar").textContent = text;
   }
 
+  function renderBacktestProgress(task = null) {
+    const panel = document.getElementById("progressPanel");
+    const stageEl = document.getElementById("progressStage");
+    const percentEl = document.getElementById("progressPercent");
+    const fillEl = document.getElementById("progressFill");
+    const detailEl = document.getElementById("progressDetail");
+    const elapsedEl = document.getElementById("progressElapsed");
+
+    if (!task) {
+      state.backtestProgress = null;
+      panel.style.display = "none";
+      panel.dataset.status = "queued";
+      stageEl.textContent = "等待执行";
+      percentEl.textContent = "0%";
+      fillEl.style.width = "0%";
+      detailEl.textContent = "尚未开始。";
+      elapsedEl.textContent = "当前耗时：0.0 秒";
+      return;
+    }
+
+    const status = task.status || "running";
+    const pct = Math.max(0, Math.min(100, Number(task.progress_pct) || 0));
+    const currentStep = Number(task.current_step) || 0;
+    const totalSteps = Number(task.total_steps) || 0;
+    const detailSuffix = totalSteps > 0 ? ` · ${currentStep}/${totalSteps}` : "";
+    const elapsedLabel = status === "running" ? "当前耗时" : "累计耗时";
+
+    panel.style.display = "block";
+    panel.dataset.status = status;
+    state.backtestProgress = { ...task, status, progress_pct: pct };
+    stageEl.textContent = task.stage_label || "执行中";
+    percentEl.textContent = `${Math.round(pct)}%`;
+    fillEl.style.width = `${pct}%`;
+    detailEl.textContent = `${task.message || "正在执行回测…"}${detailSuffix}`;
+    elapsedEl.textContent = `${elapsedLabel}：${formatElapsed(task.elapsed_seconds)}`;
+  }
+
   function updatePlanWeightBadge(planId) {
     const plan = findPlan(planId);
     const badge = document.querySelector(`[data-role="weight-sum"][data-plan-id="${planId}"]`);
@@ -1114,6 +1313,10 @@
     const markLineData = rebalanceDates
       .filter(d => dateSet.has(d))
       .map(d => ({ xAxis: d }));
+    const rebalancePoints = dates.flatMap((date, index) => {
+      if (!rebalanceDateSet.has(date) || values[index] == null) return [];
+      return [{ value: [date, values[index]] }];
+    });
 
     // Build benchmark series (filtered by checkbox state)
     const selectedBm = getSelectedBenchmarks();
@@ -1172,6 +1375,7 @@
 
           // ── Series values ──
           for (const p of params) {
+            if (p.seriesName === "调仓日" || p.seriesName === "调仓日光晕") continue;
             if (p.seriesName === "指数净值" && p.data != null) {
               const v = p.data;
               const ret = ((v - 1) * 100).toFixed(2);
@@ -1249,6 +1453,44 @@
           } : undefined
         },
         {
+          id: "rebalance-point-glow",
+          name: "调仓日光晕",
+          data: rebalancePoints,
+          type: "scatter",
+          xAxisIndex: 0, yAxisIndex: 0,
+          silent: true,
+          symbolSize: 18,
+          z: 5,
+          itemStyle: { color: "rgba(251,191,36,0.16)" },
+          tooltip: { show: false }
+        },
+        {
+          id: "rebalance-point-series",
+          name: "调仓日",
+          data: rebalancePoints,
+          type: "scatter",
+          xAxisIndex: 0, yAxisIndex: 0,
+          symbol: "circle",
+          symbolSize: 9,
+          z: 6,
+          itemStyle: {
+            color: "#fbbf24",
+            borderColor: "#fff7d6",
+            borderWidth: 2,
+            shadowBlur: 12,
+            shadowColor: "rgba(251,191,36,0.35)"
+          },
+          emphasis: {
+            scale: true,
+            itemStyle: {
+              color: "#facc15",
+              borderColor: "#ffffff",
+              borderWidth: 2
+            }
+          },
+          tooltip: { show: false }
+        },
+        {
           id: "drawdown-series",
           name: "回撤",
           data: drawdown,
@@ -1294,9 +1536,7 @@
     const items = [
       ["回测区间", `${startDate} 至 ${endDate}`],
       ["交易日数", `${tradingDays} 天`],
-      ["调仓执行次数", `${rebalanceCount} 次`],
-      ["数据源", result.data_source || "AKShare"],
-      ["缺失数据处理", result.missing_data_policy || "hold_cash"]
+      ["调仓执行次数", `${rebalanceCount} 次`]
     ];
     document.getElementById("reportBox").innerHTML = items.map(([label, value]) => `
       <div class="report-item">
@@ -1306,12 +1546,25 @@
     `).join("");
   }
 
+  function renderBacktestNotes(result = null) {
+    const sourceText = result?.data_source
+      ? `股票行情优先使用 AKShare 前复权日线，若主数据源缺失则自动切换到兜底数据源；本次回测的数据源配置为：${result.data_source}。如发生切换，可在上方“兜底数据源日志”查看具体记录。`
+      : "股票行情优先使用 AKShare 前复权日线，若主数据源缺失则自动切换到兜底数据源；如发生切换，可在结果区的“兜底数据源日志”查看具体记录。";
+    const missingText = result?.missing_data_policy
+      ? `当成分股在某个交易日无行情（停牌或数据缺失）时，该头寸当日收益记为 0，资金等效留在原持仓；本次回测采用的处理方式为：${result.missing_data_policy}。`
+      : "当成分股在某个交易日无行情（停牌或数据缺失）时，该头寸当日收益记为 0，资金等效留在原持仓，不做前值填充。";
+    document.getElementById("backtestNotesBody").innerHTML = `
+      <p><strong>数据来源：</strong>${sourceText}</p>
+      <p><strong>缺失数据处理：</strong>${missingText}</p>
+    `;
+  }
+
   function exportCsv() {
     const result = state.lastResult;
     if (!result?.nav?.length) return;
 
     const bm = result.benchmark_nav || {};
-    const bmCodes = Object.keys(bm);
+    const bmCodes = getSelectedBenchmarks().filter(code => bm[code]?.length);
     const bmMaps = {};
     bmCodes.forEach(code => {
       const rows = bm[code] || [];
@@ -1396,7 +1649,7 @@
       custom_rebalance_dates: parseCustomDates(),
       risk_free_rate: Number(document.getElementById("riskFreeRate").value || 0),
       missing_data_policy: "hold_cash",
-      benchmarks: ["000300", "000905", "000001"],
+      benchmarks: getSelectedBenchmarks(),
       plans
     };
   }
@@ -1443,6 +1696,45 @@
     upsertStatus(`已将解析结果应用到调仓计划（${plan.effectiveDate}）。`);
   }
 
+  async function waitForBacktestTask(taskId, backend) {
+    for (;;) {
+      const resp = await fetch(`${backend}/api/backtest/tasks/${taskId}`);
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data.detail || "获取回测进度失败");
+
+      renderBacktestProgress(data);
+      if (data.status === "completed" || data.status === "failed") return data;
+
+      upsertStatus(data.message || "正在执行回测并拉取行情数据，请稍候…");
+      await sleep(500);
+    }
+  }
+
+  function applyBacktestResult(data, elapsedSeconds) {
+    state.lastResult = data;
+    renderMetrics(data.metrics || {});
+    renderChart(
+      data.nav || [],
+      data.applied_rebalance_dates || [],
+      data.benchmark_nav || {},
+      data.rebalance_holdings || {}
+    );
+    renderReport(data);
+    renderBacktestNotes(data);
+    document.getElementById("exportCsvBtn").disabled = false;
+    document.getElementById("exportImgBtn").disabled = false;
+    const allWarnings = data.warnings || [];
+    const fallbackLogs = allWarnings.filter(w => w.includes("使用兜底数据源"));
+    const otherWarnings = allWarnings.filter(w => !w.includes("使用兜底数据源"));
+    setWarnings(otherWarnings);
+    setFallbackLogs(fallbackLogs);
+
+    upsertStatus(
+      `回测完成：${data.nav?.[0]?.date || "-"} 至 ${data.nav?.[data.nav.length - 1]?.date || "-"}，` +
+      `共 ${data.nav?.length || 0} 个交易日，累计耗时 ${formatElapsed(elapsedSeconds)}。`
+    );
+  }
+
   async function runBacktest() {
     let payload;
     try { payload = collectPayload(); } catch (error) {
@@ -1459,40 +1751,48 @@
     btn.disabled = true;
     btn.innerHTML = '<span class="spinner"></span>&nbsp; 回测中…';
 
-    upsertStatus("正在执行回测并拉取行情数据，请稍候…");
+    renderBacktestProgress({
+      status: "running",
+      stage_label: "准备参数",
+      progress_pct: 0,
+      message: "正在创建回测任务…",
+      elapsed_seconds: 0,
+      current_step: 0,
+      total_steps: 0
+    });
+    upsertStatus("正在创建回测任务…");
     setWarnings([]);
+    setFallbackLogs([]);
+    document.getElementById("exportCsvBtn").disabled = true;
+    document.getElementById("exportImgBtn").disabled = true;
 
     try {
-      const resp = await fetch(`${backend}/api/backtest`, {
+      const resp = await fetch(`${backend}/api/backtest/tasks`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload)
       });
-      const data = await resp.json();
-      if (!resp.ok) throw new Error(data.detail || "回测失败");
+      const task = await resp.json();
+      if (!resp.ok) throw new Error(task.detail || "回测任务创建失败");
 
-      state.lastResult = data;
-      renderMetrics(data.metrics || {});
-      renderChart(
-        data.nav || [],
-        data.applied_rebalance_dates || [],
-        data.benchmark_nav || {},
-        data.rebalance_holdings || {}
-      );
-      renderReport(data);
-      document.getElementById("exportCsvBtn").disabled = false;
-      document.getElementById("exportImgBtn").disabled = false;
-      const allWarnings = data.warnings || [];
-      const fallbackLogs = allWarnings.filter(w => w.includes("使用兜底数据源"));
-      const otherWarnings = allWarnings.filter(w => !w.includes("使用兜底数据源"));
-      setWarnings(otherWarnings);
-      setFallbackLogs(fallbackLogs);
+      const taskResult = await waitForBacktestTask(task.task_id, backend);
+      if (taskResult.status !== "completed") {
+        throw new Error(taskResult.error || taskResult.message || "回测失败");
+      }
 
-      upsertStatus(
-        `回测完成：${data.nav?.[0]?.date || "-"} 至 ${data.nav?.[data.nav.length - 1]?.date || "-"}，` +
-        `共 ${data.nav?.length || 0} 个交易日。`
-      );
+      applyBacktestResult(taskResult.result || {}, taskResult.elapsed_seconds || 0);
     } catch (error) {
+      if (!state.backtestProgress || state.backtestProgress.status === "running") {
+        renderBacktestProgress({
+          status: "failed",
+          stage_label: "执行失败",
+          progress_pct: state.backtestProgress?.progress_pct || 0,
+          message: error.message,
+          elapsed_seconds: state.backtestProgress?.elapsed_seconds || 0,
+          current_step: 0,
+          total_steps: 0
+        });
+      }
       upsertStatus(`回测失败：${error.message}`);
     } finally {
       btn.disabled = false;
@@ -1642,6 +1942,8 @@
     renderPreviewTable();
     renderMetrics();
     renderChart([], []);
+    renderBacktestProgress(null);
+    renderBacktestNotes();
   }
 
   /* ────────────────────────────────────────────────
