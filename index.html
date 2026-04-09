@@ -310,6 +310,40 @@
     .metric .value.negative { color: #b91c1c; }
     .metric .value.warning  { color: #c2410c; }
 
+    .metric .submetrics {
+      margin-top: 8px;
+      padding-top: 8px;
+      border-top: 1px dashed #dbe4ef;
+      display: grid;
+      gap: 4px;
+    }
+
+    .metric .submetric-row {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 8px;
+      font-size: 11px;
+      color: var(--subtle);
+    }
+
+    .metric .submetric-label {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .metric .submetric-value {
+      font-size: 11px;
+      font-weight: 600;
+      color: #334155;
+      flex-shrink: 0;
+    }
+
+    .metric .submetric-value.positive { color: #0f766e; }
+    .metric .submetric-value.negative { color: #b91c1c; }
+    .metric .submetric-value.warning  { color: #c2410c; }
+
     /* ── Chart ── */
     #navChart {
       height: 500px;
@@ -736,6 +770,7 @@
             <option value="none">仅按计划生效日</option>
             <option value="monthly" selected>按月再平衡</option>
             <option value="quarterly">按季度再平衡</option>
+            <option value="semiannual">按半年再平衡</option>
             <option value="custom">自定义日期</option>
           </select>
         </div>
@@ -847,6 +882,22 @@
     ["max_drawdown",     "最大回撤",    "pct"],
     ["win_rate",         "胜率",        "pct"]
   ];
+
+  const rebalanceModeLabels = {
+    none: "仅按计划生效日",
+    monthly: "按月再平衡",
+    quarterly: "按季度再平衡",
+    semiannual: "按半年再平衡",
+    custom: "自定义日期"
+  };
+
+  const rebalanceModeCompactLabels = {
+    none: "仅按计划",
+    monthly: "按月",
+    quarterly: "按季度",
+    semiannual: "按半年",
+    custom: "自定义"
+  };
 
   /* ────────────────────────────────────────────────
      Helpers
@@ -1278,11 +1329,28 @@
     }
   }
 
-  function renderMetrics(metrics = {}) {
+  function getRebalanceModeLabel(mode, fallback = "", compact = false) {
+    const labelMap = compact ? rebalanceModeCompactLabels : rebalanceModeLabels;
+    return labelMap[mode] || fallback || mode || "";
+  }
+
+  function renderMetrics(metrics = {}, comparisonMetrics = []) {
     document.getElementById("metricsContainer").innerHTML = metricsConfig.map(([key, label, mode]) => `
       <div class="metric">
         <div class="name">${label}</div>
         <div class="value ${metricColorClass(key, metrics[key])}">${formatMetric(metrics[key], mode)}</div>
+        ${
+          comparisonMetrics.length
+            ? `<div class="submetrics">${comparisonMetrics.map(item => `
+                <div class="submetric-row">
+                  <span class="submetric-label">${getRebalanceModeLabel(item.mode, item.label, true)}</span>
+                  <span class="submetric-value ${metricColorClass(key, item.metrics?.[key])}">
+                    ${formatMetric(item.metrics?.[key], mode)}
+                  </span>
+                </div>
+              `).join("")}</div>`
+            : ""
+        }
       </div>
     `).join("");
   }
@@ -1590,9 +1658,18 @@
     // Metrics section at bottom
     const metricsRows = [
       [],
+      ["频率", getRebalanceModeLabel(result.selected_rebalance_mode, result.selected_rebalance_label)],
       ["指标", "数值"],
       ...metricsConfig.map(([key, label, mode]) => [label, formatMetric(result.metrics?.[key], mode)])
     ];
+    (result.comparison_metrics || []).forEach(item => {
+      metricsRows.push(
+        [],
+        ["频率", getRebalanceModeLabel(item.mode, item.label)],
+        ["指标", "数值"],
+        ...metricsConfig.map(([key, label, mode]) => [label, formatMetric(item.metrics?.[key], mode)])
+      );
+    });
 
     const allRows = [headers, ...rows, ...metricsRows];
     const csv = allRows.map(row => row.join(",")).join("\n");
@@ -1712,7 +1789,7 @@
 
   function applyBacktestResult(data, elapsedSeconds) {
     state.lastResult = data;
-    renderMetrics(data.metrics || {});
+    renderMetrics(data.metrics || {}, data.comparison_metrics || []);
     renderChart(
       data.nav || [],
       data.applied_rebalance_dates || [],
