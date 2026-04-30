@@ -745,6 +745,9 @@
         <span class="step-badge">2</span>
         <h2>调仓计划</h2>
         <button id="addPlanBtn" class="light" style="font-size:11px; padding:4px 10px;">＋ 新增计划</button>
+        <button id="exportPlansBtn" class="light" style="font-size:11px; padding:4px 9px;" title="导出调仓计划为 JSON">↓ 导出</button>
+        <button id="importPlansBtn" class="light" style="font-size:11px; padding:4px 9px;" title="从 JSON 导入调仓计划">↑ 导入</button>
+        <input id="importPlansFile" type="file" accept=".json" style="display:none;" />
       </div>
       <div id="plansContainer"></div>
     </div>
@@ -939,11 +942,8 @@
     const fractions = rawUnits
       .map((v, i) => ({ i, frac: v - floorUnits[i] }))
       .sort((a, b) => b.frac - a.frac);
-    let cursor = 0;
-    while (remain > 0 && fractions.length > 0) {
-      floorUnits[fractions[cursor % fractions.length].i] += 1;
-      remain -= 1;
-      cursor += 1;
+    for (let idx = 0; idx < remain && idx < fractions.length; idx++) {
+      floorUnits[fractions[idx].i] += 1;
     }
     validRows.forEach((row, idx) => { row.weight = floorUnits[idx] / scale; });
   }
@@ -1024,7 +1024,9 @@
           endDate: document.getElementById("endDate").value,
           rebalanceMode: document.getElementById("rebalanceMode").value,
           riskFreeRate: document.getElementById("riskFreeRate").value,
-          backendUrl: document.getElementById("backendUrl").value
+          backendUrl: document.getElementById("backendUrl").value,
+          customDates: document.getElementById("customDates").value,
+          benchmarks: getSelectedBenchmarks()
         }
       };
       localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
@@ -1095,6 +1097,58 @@
 
   function findPlan(planId) {
     return state.plans.find(p => p.id === planId);
+  }
+
+  function exportPlans() {
+    syncPlansFromDom();
+    const data = {
+      v: 1,
+      exported_at: new Date().toISOString(),
+      plans: state.plans.map(plan => ({
+        effectiveDate: plan.effectiveDate,
+        components: plan.components.map(r => ({
+          code: r.code, name: r.name, weight: r.weight
+        }))
+      }))
+    };
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `backtest_plans_${new Date().toISOString().slice(0, 10)}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    upsertStatus("调仓计划已导出。");
+  }
+
+  function importPlans() {
+    const file = document.getElementById("importPlansFile").files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const data = JSON.parse(reader.result);
+        if (!data?.plans?.length) throw new Error("文件中没有有效的调仓计划");
+        syncPlansFromDom();
+        const imported = data.plans.map(p => createPlan(
+          p.effectiveDate || "",
+          (p.components || []).map(c => makeRow(c.code, c.name, c.weight))
+        ));
+        state.plans = imported;
+        state.expandedPlans.clear();
+        imported.forEach(p => state.expandedPlans.add(p.id));
+        renderPlans();
+        renderPlanSelect();
+        saveToStorage();
+        upsertStatus(`已导入 ${imported.length} 条调仓计划。`);
+      } catch (err) {
+        upsertStatus(`导入失败：${err.message}`);
+      }
+    };
+    reader.readAsText(file);
+    document.getElementById("importPlansFile").value = "";
   }
 
   /* ────────────────────────────────────────────────
@@ -1394,10 +1448,18 @@
         const bmMap = {};
         (benchmarkNavs[code] || []).forEach(item => { bmMap[item.date] = item.value; });
         let bmValues = dates.map(d => bmMap[d] ?? null);
-        // Normalise to start at 1.0 if raw index points are returned
-        const firstVal = bmValues.find(v => v !== null);
-        if (firstVal != null && Math.abs(firstVal) > 5) {
-          bmValues = bmValues.map(v => v !== null ? v / firstVal : null);
+        // Normalise to start at 1.0 if raw index points are returned.
+        // Use the first valid value within the chart's date range as baseline.
+        const firstIdx = bmValues.findIndex(v => v !== null);
+        if (firstIdx >= 0) {
+          const baseline = bmValues[firstIdx];
+          if (Math.abs(baseline) > 5) {
+            bmValues = bmValues.map(v => v !== null ? v / baseline : null);
+          }
+          // Back-fill nulls before first valid point so benchmark aligns from chart start
+          for (let i = firstIdx - 1; i >= 0; i--) {
+            bmValues[i] = bmValues[i + 1];
+          }
         }
         return {
           id: `benchmark-${code}`,
@@ -1632,15 +1694,19 @@
     if (!result?.nav?.length) return;
 
     const bm = result.benchmark_nav || {};
+    const navDates = (result.nav || []).map(item => item.date);
     const bmCodes = getSelectedBenchmarks().filter(code => bm[code]?.length);
     const bmMaps = {};
     bmCodes.forEach(code => {
-      const rows = bm[code] || [];
-      // Normalise same as chart
-      const firstVal = rows[0]?.value;
-      const scale = firstVal && Math.abs(firstVal) > 5 ? firstVal : 1;
+      const rawMap = {};
+      (bm[code] || []).forEach(item => { rawMap[item.date] = item.value; });
+      const vals = navDates.map(d => rawMap[d] ?? null);
+      const firstIdx = vals.findIndex(v => v !== null);
+      const scale = firstIdx >= 0 && Math.abs(vals[firstIdx]) > 5 ? vals[firstIdx] : 1;
       bmMaps[code] = {};
-      rows.forEach(item => { bmMaps[code][item.date] = item.value / scale; });
+      navDates.forEach((date, idx) => {
+        bmMaps[code][date] = vals[idx] !== null ? vals[idx] / scale : null;
+      });
     });
 
     const bmHeaders = bmCodes.map(c => BENCHMARK_NAMES[c] || c);
@@ -1649,7 +1715,7 @@
     const rows = result.nav.map(item => {
       const ret = ((item.value - 1) * 100).toFixed(2);
       const bmVals = bmCodes.map(c => {
-        const v = bmMaps[c][item.date];
+        const v = bmMaps[c]?.[item.date];
         return v != null ? v.toFixed(6) : "";
       });
       return [item.date, item.value.toFixed(6), ret, ...bmVals];
@@ -1714,10 +1780,24 @@
           }))
           .filter(row => row.code)
       }))
-      .filter(plan => plan.components.length > 0)
-      .sort((a, b) => a.effective_date.localeCompare(b.effective_date));
+      .filter(plan => plan.components.length > 0);
 
     if (!plans.length) throw new Error("至少需要一条包含成分股的调仓计划");
+
+    const emptyDates = plans.filter(p => !p.effective_date);
+    if (emptyDates.length) {
+      throw new Error("部分调仓计划未设置生效日期，请检查后再执行回测");
+    }
+
+    // Validate each plan's weight total is non-zero
+    for (const plan of plans) {
+      const total = plan.components.reduce((s, r) => s + (Number(r.weight) || 0), 0);
+      if (total <= 0) {
+        throw new Error(`存在权重总和为 0 的调仓计划（生效日 ${plan.effective_date}），请分配权重后再执行回测`);
+      }
+    }
+
+    plans.sort((a, b) => a.effective_date < b.effective_date ? -1 : a.effective_date > b.effective_date ? 1 : 0);
 
     return {
       start_date: document.getElementById("startDate").value,
@@ -2000,6 +2080,12 @@
         if (p.rebalanceMode) document.getElementById("rebalanceMode").value = p.rebalanceMode;
         if (p.riskFreeRate)  document.getElementById("riskFreeRate").value = p.riskFreeRate;
         if (p.backendUrl)    document.getElementById("backendUrl").value = p.backendUrl;
+        if (p.customDates)   document.getElementById("customDates").value = p.customDates;
+        if (Array.isArray(p.benchmarks)) {
+          document.querySelectorAll(".bm-check").forEach(cb => {
+            cb.checked = p.benchmarks.includes(cb.value);
+          });
+        }
       }
     } else {
       document.getElementById("startDate").value = start.toISOString().slice(0, 10);
@@ -2030,6 +2116,11 @@
   document.getElementById("applyPreviewBtn").addEventListener("click", applyPreviewToPlan);
   document.getElementById("runBacktestBtn").addEventListener("click", runBacktest);
   document.getElementById("addPlanBtn").addEventListener("click", () => addPlan(true));
+  document.getElementById("exportPlansBtn").addEventListener("click", exportPlans);
+  document.getElementById("importPlansBtn").addEventListener("click", () => {
+    document.getElementById("importPlansFile").click();
+  });
+  document.getElementById("importPlansFile").addEventListener("change", importPlans);
 
   document.getElementById("rebalanceMode").addEventListener("change", event => {
     document.getElementById("customDatesRow").style.display =
@@ -2069,8 +2160,12 @@
     if (event.target.classList.contains("bm-check")) refreshBenchmarks();
   });
 
+  let resizeTimer = null;
   window.addEventListener("resize", () => {
-    if (state.chart) state.chart.resize();
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(() => {
+      if (state.chart) state.chart.resize();
+    }, 150);
   });
 
   initDefaults();

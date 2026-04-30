@@ -218,10 +218,20 @@ class BacktestRequest(BaseModel):
     missing_data_policy: Literal["hold_cash"] = "hold_cash"
     benchmarks: List[str] = Field(default_factory=list)
 
+    @validator("end_date")
+    def validate_date_range(cls, end_date: date, values: Dict[str, object]) -> date:
+        start_date = values.get("start_date")
+        if start_date is not None and end_date <= start_date:
+            raise ValueError("回测结束日期必须晚于开始日期")
+        return end_date
+
     @validator("plans")
     def validate_plans_not_empty(cls, value: List[RebalancePlanInput]) -> List[RebalancePlanInput]:
         if not value:
             raise ValueError("至少需要一条调仓计划")
+        invalid_dates = [p.effective_date for p in value if not p.effective_date]
+        if invalid_dates:
+            raise ValueError("部分调仓计划未设置生效日期")
         return value
 
 
@@ -255,6 +265,9 @@ class BacktestTaskState:
 BACKTEST_TASKS: Dict[str, BacktestTaskState] = {}
 BACKTEST_TASKS_LOCK = threading.Lock()
 BACKTEST_TASK_TTL_SECONDS = 3600
+MAX_CONCURRENT_TASKS = read_positive_int_env("BACKTEST_MAX_CONCURRENT", 3)
+ACTIVE_TASK_COUNT = 0
+ACTIVE_TASK_COUNT_LOCK = threading.Lock()
 BACKTEST_STAGE_LABELS = {
     "queued": "等待执行",
     "prepare": "准备参数",
@@ -560,14 +573,37 @@ def _load_cached_ranges(
     return tuple(normalize_cached_ranges(ranges))
 
 
-def save_cached_ranges(meta_path: Path, ranges: Iterable[Tuple[date, date]]) -> None:
+def load_cached_fallback_flag(meta_path: Path) -> bool:
+    try:
+        if meta_path.exists():
+            payload = json.loads(meta_path.read_text(encoding="utf-8"))
+            return bool(payload.get("has_fallback", False))
+    except Exception:  # noqa: BLE001
+        pass
+    return False
+
+
+def save_cached_ranges(
+    meta_path: Path,
+    ranges: Iterable[Tuple[date, date]],
+    has_fallback: bool = False,
+) -> None:
     meta_path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "ranges": [
             {"start": start_date.isoformat(), "end": end_date.isoformat()}
             for start_date, end_date in normalize_cached_ranges(ranges)
-        ]
+        ],
     }
+    if has_fallback:
+        payload["has_fallback"] = True
+    elif meta_path.exists():
+        try:
+            existing = json.loads(meta_path.read_text(encoding="utf-8"))
+            if existing.get("has_fallback"):
+                payload["has_fallback"] = True
+        except Exception:  # noqa: BLE001
+            pass
     meta_path.write_text(
         json.dumps(payload, ensure_ascii=False, indent=2),
         encoding="utf-8",
@@ -578,9 +614,13 @@ def load_cached_stock_ranges(symbol: str) -> List[Tuple[date, date]]:
     return load_cached_ranges(stock_cache_file(symbol), stock_cache_meta_file(symbol))
 
 
-def save_cached_stock_ranges(symbol: str, ranges: Iterable[Tuple[date, date]]) -> None:
+def save_cached_stock_ranges(symbol: str, ranges: Iterable[Tuple[date, date]], has_fallback: bool = False) -> None:
     ensure_stock_cache_dirs()
-    save_cached_ranges(stock_cache_meta_file(symbol), ranges)
+    save_cached_ranges(stock_cache_meta_file(symbol), ranges, has_fallback=has_fallback)
+
+
+def load_cached_stock_fallback(symbol: str) -> bool:
+    return load_cached_fallback_flag(stock_cache_meta_file(symbol))
 
 
 def load_cached_benchmark_series(code: str) -> pd.Series:
@@ -1150,8 +1190,10 @@ def fetch_symbol_close_series(
     with get_cache_resource_lock("stock", symbol):
         cached_series = load_cached_stock_series(symbol)
         cached_ranges = load_cached_stock_ranges(symbol)
+        cached_fallback = load_cached_stock_fallback(symbol)
 
         fetched_sources: List[str] = []
+        has_new_fallback = cached_fallback
         cache_dirty = False
         ranges_dirty = False
 
@@ -1163,6 +1205,8 @@ def fetch_symbol_close_series(
                 cached_series = merge_price_series(cached_series, gap_series)
                 cached_ranges = normalize_cached_ranges(cached_ranges + [(gap_start, gap_end)])
                 fetched_sources.append(source)
+                if source == "stock_zh_a_hist_tx":
+                    has_new_fallback = True
                 cache_dirty = True
                 ranges_dirty = True
 
@@ -1172,14 +1216,16 @@ def fetch_symbol_close_series(
                 today_series, source = fetch_symbol_close_series_remote(symbol, today, today)
                 cached_series = merge_price_series(cached_series, today_series)
                 fetched_sources.append(source)
+                if source == "stock_zh_a_hist_tx":
+                    has_new_fallback = True
                 cache_dirty = True
             except Exception as exc:  # noqa: BLE001
                 refresh_error = exc
 
         if cache_dirty:
             save_cached_stock_series(symbol, cached_series)
-        if ranges_dirty:
-            save_cached_stock_ranges(symbol, cached_ranges)
+        if ranges_dirty or has_new_fallback != cached_fallback:
+            save_cached_stock_ranges(symbol, cached_ranges, has_fallback=has_new_fallback)
 
         result = slice_price_series(cached_series, request_start, request_end)
         if result.empty:
@@ -1191,6 +1237,8 @@ def fetch_symbol_close_series(
             return result, "stock_zh_a_hist_tx"
         if "stock_zh_a_hist" in fetched_sources:
             return result, "stock_zh_a_hist"
+        if has_new_fallback:
+            return result, "stock_zh_a_hist_tx"
         return result, "cache"
 
 
@@ -1625,8 +1673,6 @@ def align_plan_dates_to_trading_days(
         )
 
     aligned.extend(mapped.values())
-    if not aligned and mapped:
-        aligned.extend(mapped.values())
 
     if not aligned:
         raise HTTPException(status_code=400, detail="所有调仓计划均不在可交易区间内")
@@ -1677,18 +1723,22 @@ async def parse_components(file: UploadFile = File(...)) -> Dict[str, object]:
 
     raw_components: List[ComponentInput] = []
     skipped_rows = 0
+    skipped_reasons: List[str] = []
 
-    for _, row in df.iterrows():
+    for row_idx, (_, row) in enumerate(df.iterrows()):
         try:
             code = normalize_stock_code(row.get(code_col))
-        except Exception:
+        except ValueError as exc:
             skipped_rows += 1
+            skipped_reasons.append(f"第{row_idx + 1}行代码无效: {exc}")
             continue
 
         try:
             weight = parse_weight(row.get(weight_col)) if weight_col else 1.0
-        except Exception:
-            weight = 0.0
+        except ValueError as exc:
+            skipped_rows += 1
+            skipped_reasons.append(f"{code} 权重解析失败: {exc}")
+            continue
 
         name = clean_excel_text(row.get(name_col)) if name_col else ""
         raw_components.append(ComponentInput(code=code, weight=weight, name=name))
@@ -1710,6 +1760,7 @@ async def parse_components(file: UploadFile = File(...)) -> Dict[str, object]:
         "row_count": int(len(df)),
         "parsed_count": int(len(components)),
         "skipped_rows": int(skipped_rows),
+        "skipped_reasons": skipped_reasons[:20],
         "components": components,
     }
 
@@ -1851,6 +1902,8 @@ def execute_backtest(
 
 
 def run_backtest_task(task_id: str, request: BacktestRequest) -> None:
+    global ACTIVE_TASK_COUNT
+
     def on_progress(
         progress: float,
         stage: str,
@@ -1914,6 +1967,9 @@ def run_backtest_task(task_id: str, request: BacktestRequest) -> None:
             result=result,
             error=None,
         )
+    finally:
+        with ACTIVE_TASK_COUNT_LOCK:
+            ACTIVE_TASK_COUNT = max(0, ACTIVE_TASK_COUNT - 1)
 
 
 @app.post("/api/backtest")
@@ -1923,6 +1979,16 @@ def run_backtest(request: BacktestRequest) -> Dict[str, object]:
 
 @app.post("/api/backtest/tasks")
 def create_backtest_task_api(request: BacktestRequest) -> Dict[str, str]:
+    global ACTIVE_TASK_COUNT
+
+    with ACTIVE_TASK_COUNT_LOCK:
+        if ACTIVE_TASK_COUNT >= MAX_CONCURRENT_TASKS:
+            raise HTTPException(
+                status_code=429,
+                detail=f"已有 {ACTIVE_TASK_COUNT} 个回测任务正在执行，请等待其中某个完成后再提交（并发上限 {MAX_CONCURRENT_TASKS}）。",
+            )
+        ACTIVE_TASK_COUNT += 1
+
     task = create_backtest_task()
     worker = threading.Thread(target=run_backtest_task, args=(task.task_id, request), daemon=True)
     worker.start()
