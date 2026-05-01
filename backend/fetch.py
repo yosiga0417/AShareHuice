@@ -156,7 +156,9 @@ def fetch_symbol_close_series(
         raise ValueError("开始日期不能晚于结束日期")
     today = date.today()
     historical_end = min(request_end, today - timedelta(days=1))
-    includes_today = request_start <= today <= request_end
+    # 周末跳过当日拉取，避免无谓等待
+    weekend_skip = today.weekday() >= 5
+    includes_today = (not weekend_skip) and (request_start <= today <= request_end)
     with get_cache_resource_lock("stock", symbol):
         cached_series = load_cached_stock_series(symbol)
         cached_ranges = load_cached_stock_ranges(symbol)

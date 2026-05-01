@@ -3,6 +3,7 @@
   ──────────────────────────────────────────────── */
   const STORAGE_KEY = "a_stock_backtest_v1";
   const COMPARISON_STORAGE_KEY = "a_stock_backtest_comparisons_v1";
+  const LAST_RESULT_KEY = "a_stock_backtest_last_result_v1";
 
   const state = {
     plans: [],
@@ -251,16 +252,65 @@
       const months = [1,2,3,4,5,6,7,8,9,10,11,12];
       const heatData = monthlyData.map(d => [d.year, d.month - 1, d.return]);
       const maxAbs = Math.max(0.001, ...monthlyData.map(d => Math.abs(d.return)));
+      const showLabel = years.length <= 10;
       const dom = document.getElementById("monthlyHeatmap");
       if (!monthlyHeatmapChart) monthlyHeatmapChart = echarts.init(dom);
       monthlyHeatmapChart.setOption({
-        title: { text: "月度收益热力图", left: "center", top: 0, textStyle: { fontSize: 13 } },
-        tooltip: { formatter: p => p.data ? `${p.data[0]}-${String(p.data[1] + 1).padStart(2,"0")}<br/>收益: ${(p.data[2] * 100).toFixed(2)}%` : "" },
-        grid: { top: 35, left: 5, right: 10, bottom: 5 },
-        xAxis: { type: "category", data: months.map(m => `${m}月`), axisLabel: { fontSize: 10 } },
-        yAxis: { type: "category", data: years, axisLabel: { fontSize: 10 } },
-        visualMap: { min: -maxAbs, max: maxAbs, calculable: false, orient: "horizontal", left: "center", bottom: 0, inRange: { color: ["#b91c1c", "#f8d7da", "#f3f6fb", "#d1f2eb", "#0f766e"] } },
-        series: [{ type: "heatmap", data: heatData, label: { show: true, fontSize: 9, formatter: p => (p.data[2] * 100).toFixed(1) + "%" }, emphasis: { itemStyle: { shadowBlur: 8, shadowColor: "rgba(0,0,0,0.3)" } } }]
+        title: { text: "月度收益热力图", left: "center", top: 8, textStyle: { fontSize: 14, fontWeight: 600, color: "#1e293b" } },
+        tooltip: {
+          backgroundColor: "#fff",
+          borderColor: "#e2e8f0",
+          borderWidth: 1,
+          padding: [10, 14],
+          textStyle: { color: "#1e293b", fontSize: 13 },
+          formatter: p => {
+            if (!p.data) return "";
+            const val = (p.data[2] * 100).toFixed(2);
+            const sign = val > 0 ? "+" : "";
+            const color = val > 0 ? "#16a34a" : val < 0 ? "#dc2626" : "#64748b";
+            return `<span style="font-size:12px;color:#64748b">${p.data[0]}年${p.data[1] + 1}月</span><br/><span style="font-size:18px;font-weight:700;color:${color}">${sign}${val}%</span>`;
+          }
+        },
+        grid: { top: 50, left: 52, right: 72, bottom: 20 },
+        xAxis: {
+          type: "category", data: months.map(m => `${m}月`),
+          axisLabel: { fontSize: 11, color: "#64748b" },
+          axisLine: { show: false },
+          axisTick: { show: false },
+          splitArea: { show: false }
+        },
+        yAxis: {
+          type: "category", data: years,
+          axisLabel: { fontSize: 11, color: "#64748b", fontWeight: 500 },
+          axisLine: { show: false },
+          axisTick: { show: false },
+          splitArea: { show: false }
+        },
+        visualMap: {
+          min: -maxAbs, max: maxAbs, calculable: false,
+          orient: "vertical", right: 4, top: "middle", itemWidth: 14, itemHeight: 160,
+          text: ["高", "低"], textStyle: { color: "#64748b", fontSize: 10 },
+          formatter: v => (v * 100).toFixed(1) + "%",
+          inRange: { color: ["#dc2626", "#fca5a5", "#fee2e2", "#f8fafc", "#dcfce7", "#86efac", "#16a34a"] }
+        },
+        series: [{
+          type: "heatmap", data: heatData,
+          label: {
+            show: showLabel,
+            fontSize: years.length <= 5 ? 12 : years.length <= 8 ? 10 : 9,
+            formatter: p => (p.data[2] * 100).toFixed(1) + "%",
+            color: "#1e293b"
+          },
+          emphasis: {
+            itemStyle: {
+              shadowBlur: 10,
+              shadowColor: "rgba(0,0,0,0.2)",
+              borderColor: "#333",
+              borderWidth: 1
+            }
+          },
+          itemStyle: { borderColor: "#fff", borderWidth: 2, borderRadius: 2 }
+        }]
       });
     }
   }
@@ -1204,8 +1254,38 @@ function renderBacktestNotes(result = null) {
     }
   }
 
+  function saveLastResult() {
+    if (!state.lastResult) return;
+    try {
+      const payload = {
+        result: state.lastResult,
+        savedAt: new Date().toISOString(),
+        params: {
+          startDate: document.getElementById("startDate").value,
+          endDate: document.getElementById("endDate").value,
+          rebalanceMode: document.getElementById("rebalanceMode").value,
+          benchmarks: getSelectedBenchmarks()
+        }
+      };
+      localStorage.setItem(LAST_RESULT_KEY, JSON.stringify(payload));
+    } catch (e) { /* 结果太大时静默失败 */ }
+  }
+
+  function loadLastResult() {
+    try {
+      const raw = localStorage.getItem(LAST_RESULT_KEY);
+      if (!raw) return null;
+      const data = JSON.parse(raw);
+      if (!data?.result?.nav?.length) return null;
+      return data;
+    } catch (e) {
+      return null;
+    }
+  }
+
   function applyBacktestResult(data, elapsedSeconds) {
     state.lastResult = data;
+    saveLastResult();
     renderMetrics(data.metrics || {}, data.comparison_metrics || []);
     renderChart(
       data.nav || [],
@@ -1447,11 +1527,36 @@ function renderBacktestNotes(result = null) {
     renderPlans();
     renderPlanSelect();
     renderPreviewTable();
-    renderMetrics();
-    renderChart([], []);
+
+    const lastResult = loadLastResult();
+    if (lastResult) {
+      state.lastResult = lastResult.result;
+      renderMetrics(lastResult.result.metrics || {}, lastResult.result.comparison_metrics || []);
+      renderChart(
+        lastResult.result.nav || [],
+        lastResult.result.applied_rebalance_dates || [],
+        lastResult.result.benchmark_nav || {},
+        lastResult.result.rebalance_holdings || {}
+      );
+      renderReport(lastResult.result);
+      renderPeriodicReturns(lastResult.result.periodic_returns);
+      renderBacktestNotes(lastResult.result);
+      document.getElementById("exportCsvBtn").disabled = false;
+      document.getElementById("exportImgBtn").disabled = false;
+      document.getElementById("saveComparisonBtn").style.display = "inline-block";
+      const allWarnings = lastResult.result.warnings || [];
+      const fallbackLogs = allWarnings.filter(w => w.includes("使用兜底数据源"));
+      const otherWarnings = allWarnings.filter(w => !w.includes("使用兜底数据源"));
+      setWarnings(otherWarnings);
+      setFallbackLogs(fallbackLogs);
+      upsertStatus(`已恢复上次回测结果（${new Date(lastResult.savedAt).toLocaleString("zh-CN")}），点击"执行回测"可刷新。`);
+    } else {
+      renderMetrics();
+      renderChart([], []);
+      renderBacktestNotes();
+    }
     renderComparisonBar();
     renderBacktestProgress(null);
-    renderBacktestNotes();
   }
 
   /* ────────────────────────────────────────────────
