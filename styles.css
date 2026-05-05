@@ -289,13 +289,100 @@
       border-radius: 10px;
       padding: 10px 12px;
       background: #f8fafc;
+      position: relative;
+    }
+
+    .metric .name-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+      margin-bottom: 4px;
     }
 
     .metric .name {
       font-size: 11px;
       color: var(--subtle);
-      margin-bottom: 4px;
+      min-width: 0;
     }
+
+    .metric-info {
+      width: 15px;
+      height: 15px;
+      border: 1px solid #cbd5e1;
+      border-radius: 50%;
+      color: #64748b;
+      background: #fff;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      flex: 0 0 auto;
+      font-size: 10px;
+      font-weight: 700;
+      line-height: 1;
+      cursor: help;
+      position: relative;
+      user-select: none;
+    }
+
+    .metric-info:hover,
+    .metric-info:focus {
+      color: var(--primary);
+      border-color: #93c5fd;
+      background: var(--primary-soft);
+      outline: none;
+    }
+
+    .metric-info::after {
+      content: attr(data-tooltip);
+      position: absolute;
+      z-index: 20;
+      left: 50%;
+      bottom: calc(100% + 8px);
+      width: max-content;
+      max-width: 240px;
+      transform: translateX(-50%) translateY(4px);
+      padding: 8px 10px;
+      border: 1px solid #dbe4ef;
+      border-radius: 8px;
+      background: #0f172a;
+      color: #f8fafc;
+      box-shadow: 0 10px 24px rgba(15, 23, 42, 0.18);
+      font-size: 11px;
+      font-weight: 500;
+      line-height: 1.55;
+      white-space: normal;
+      text-align: left;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 120ms ease, transform 120ms ease;
+    }
+
+    .metric-info::before {
+      content: "";
+      position: absolute;
+      z-index: 21;
+      left: 50%;
+      bottom: calc(100% + 3px);
+      width: 8px;
+      height: 8px;
+      border-right: 1px solid #dbe4ef;
+      border-bottom: 1px solid #dbe4ef;
+      background: #0f172a;
+      transform: translateX(-50%) rotate(45deg);
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 120ms ease;
+    }
+
+    .metric-info:hover::after,
+    .metric-info:focus::after {
+      opacity: 1;
+      transform: translateX(-50%) translateY(0);
+    }
+
+    .metric-info:hover::before,
+    .metric-info:focus::before { opacity: 1; }
 
     .metric .value { font-size: 20px; font-weight: 700; }
     .metric .value.positive { color: #0f766e; }
@@ -344,6 +431,73 @@
       border-radius: 10px;
       background: #fff;
       margin-bottom: 12px;
+    }
+
+    .periodic-returns {
+      margin-bottom: 12px;
+    }
+
+    .periodic-grid {
+      display: grid;
+      grid-template-columns: minmax(220px, 0.34fr) minmax(540px, 1fr);
+      gap: 12px;
+      align-items: stretch;
+    }
+
+    .returns-card {
+      height: 100%;
+      margin-bottom: 0;
+      padding: 12px;
+      border-radius: 10px;
+      background: linear-gradient(180deg, #ffffff 0%, #fbfdff 100%);
+    }
+
+    .returns-card-head {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 9px;
+    }
+
+    .returns-card-title {
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--text);
+    }
+
+    .returns-card-meta {
+      font-size: 11px;
+      color: var(--subtle);
+      font-variant-numeric: tabular-nums;
+    }
+
+    .annual-returns .table-wrap {
+      max-height: 340px;
+      border-radius: 8px;
+    }
+
+    .annual-returns table {
+      font-variant-numeric: tabular-nums;
+    }
+
+    .annual-returns td:last-child {
+      text-align: right;
+      font-weight: 700;
+    }
+
+    .positive { color: #0f766e; }
+    .negative { color: #b91c1c; }
+    .warning  { color: #c2410c; }
+
+    .monthly-heatmap {
+      min-width: 0;
+      height: 420px;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background:
+        linear-gradient(180deg, rgba(248, 250, 252, 0.55) 0%, rgba(255, 255, 255, 0) 45%),
+        #fff;
     }
 
     /* ── Report items ── */
@@ -647,6 +801,16 @@
       .results-area {
         grid-column: 1;
         grid-row: 3;
+      }
+
+      .periodic-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    @media (min-width: 901px) and (max-width: 1240px) {
+      .periodic-grid {
+        grid-template-columns: 1fr;
       }
     }
 

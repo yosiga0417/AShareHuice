@@ -28,6 +28,17 @@
     ["win_rate",               "胜率",          "pct"]
   ];
 
+  const metricDescriptions = {
+    total_return: "回测区间内净值从起点到终点的累计涨跌幅，用来直接看这段时间赚亏了多少。",
+    annual_return: "把区间收益换算成年化口径，便于和不同长度的回测或基准做横向比较。",
+    annual_volatility: "日收益波动按 252 个交易日年化后的结果，用来衡量净值起伏和不稳定程度。",
+    sharpe_ratio: "衡量每承担一单位总波动获得的超额收益，已扣除无风险利率，通常越高越好。",
+    sortino_ratio: "衡量每承担一单位下行波动获得的超额收益，只惩罚亏损方向的波动，通常越高越好。",
+    calmar_ratio: "年化收益除以最大回撤绝对值，用来观察收益是否足以覆盖最深回撤压力。",
+    max_drawdown: "回测期间净值从历史高点跌到低点的最大跌幅，用来评估最糟糕的回撤体验。",
+    win_rate: "日收益为正的交易日占比，用来观察上涨天数的比例，不代表单次交易胜率。"
+  };
+
   const rebalanceModeLabels = {
     none: "仅按计划生效日",
     monthly: "按月再平衡",
@@ -227,18 +238,23 @@
       container.style.display = "none";
       return;
     }
-    container.style.display = "flex";
-    const annualSorted = (periodicData.annual || []).sort((a, b) => b.year - a.year);
+    container.style.display = "block";
+    const annualSorted = [...(periodicData.annual || [])].sort((a, b) => b.year - a.year);
     const tableHtml = `
-      <div class="panel" style="margin-bottom:0;">
-        <div style="font-size:13px; font-weight:600; margin-bottom:6px;">年度收益</div>
-        <div class="table-wrap" style="max-height:300px;">
+      <div class="panel returns-card">
+        <div class="returns-card-head">
+          <div class="returns-card-title">年度收益</div>
+          <div class="returns-card-meta">${annualSorted.length} 年</div>
+        </div>
+        <div class="table-wrap">
           <table>
             <thead><tr><th>年份</th><th>收益</th></tr></thead>
             <tbody>
               ${annualSorted.map(item => {
                 const cls = item.return > 0 ? "positive" : item.return < 0 ? "negative" : "";
-                return `<tr><td>${item.year}</td><td class="${cls}" style="font-weight:600;">${(item.return * 100).toFixed(2)}%</td></tr>`;
+                const pct = item.return * 100;
+                const sign = pct > 0 ? "+" : "";
+                return `<tr><td>${item.year}</td><td class="${cls}">${sign}${pct.toFixed(2)}%</td></tr>`;
               }).join("")}
             </tbody>
           </table>
@@ -250,68 +266,94 @@
     if (monthlyData.length) {
       const years = [...new Set(monthlyData.map(d => d.year))].sort();
       const months = [1,2,3,4,5,6,7,8,9,10,11,12];
-      const heatData = monthlyData.map(d => [d.year, d.month - 1, d.return]);
+      const yearIndex = new Map(years.map((year, index) => [year, index]));
+      const heatData = monthlyData.map(d => [d.month - 1, yearIndex.get(d.year), d.return]);
       const maxAbs = Math.max(0.001, ...monthlyData.map(d => Math.abs(d.return)));
-      const showLabel = years.length <= 10;
       const dom = document.getElementById("monthlyHeatmap");
+      const heatmapHeight = Math.min(720, Math.max(420, 150 + years.length * 34));
+      dom.style.height = `${heatmapHeight}px`;
+      const chartWidth = dom.getBoundingClientRect().width || 720;
+      const showLabel = years.length <= 8 && chartWidth >= 620;
+      const legendHeight = Math.min(230, Math.max(150, heatmapHeight - 190));
       if (!monthlyHeatmapChart) monthlyHeatmapChart = echarts.init(dom);
       monthlyHeatmapChart.setOption({
-        title: { text: "月度收益热力图", left: "center", top: 8, textStyle: { fontSize: 14, fontWeight: 600, color: "#1e293b" } },
+        title: {
+          text: "月度收益",
+          subtext: showLabel ? "每格显示当月收益率" : "悬停查看当月收益率",
+          left: 18,
+          top: 14,
+          textStyle: { fontSize: 14, fontWeight: 700, color: "#1e293b" },
+          subtextStyle: { fontSize: 11, color: "#64748b", lineHeight: 16 }
+        },
         tooltip: {
+          confine: true,
           backgroundColor: "#fff",
           borderColor: "#e2e8f0",
           borderWidth: 1,
           padding: [10, 14],
           textStyle: { color: "#1e293b", fontSize: 13 },
+          extraCssText: "box-shadow:0 8px 24px rgba(15,23,42,.12);border-radius:8px;",
           formatter: p => {
             if (!p.data) return "";
-            const val = (p.data[2] * 100).toFixed(2);
-            const sign = val > 0 ? "+" : "";
-            const color = val > 0 ? "#16a34a" : val < 0 ? "#dc2626" : "#64748b";
-            return `<span style="font-size:12px;color:#64748b">${p.data[0]}年${p.data[1] + 1}月</span><br/><span style="font-size:18px;font-weight:700;color:${color}">${sign}${val}%</span>`;
+            const pct = p.data[2] * 100;
+            const val = pct.toFixed(2);
+            const sign = pct > 0 ? "+" : "";
+            const color = pct > 0 ? "#16a34a" : pct < 0 ? "#dc2626" : "#64748b";
+            return `<span style="font-size:12px;color:#64748b">${years[p.data[1]]}年${p.data[0] + 1}月</span><br/><span style="font-size:18px;font-weight:700;color:${color}">${sign}${val}%</span>`;
           }
         },
-        grid: { top: 50, left: 52, right: 72, bottom: 20 },
+        grid: { top: 86, left: 58, right: 96, bottom: 30, containLabel: true },
         xAxis: {
           type: "category", data: months.map(m => `${m}月`),
-          axisLabel: { fontSize: 11, color: "#64748b" },
+          position: "top",
+          axisLabel: { fontSize: 11, color: "#64748b", margin: 10 },
           axisLine: { show: false },
           axisTick: { show: false },
           splitArea: { show: false }
         },
         yAxis: {
           type: "category", data: years,
-          axisLabel: { fontSize: 11, color: "#64748b", fontWeight: 500 },
+          axisLabel: { fontSize: 11, color: "#64748b", fontWeight: 600, margin: 12 },
           axisLine: { show: false },
           axisTick: { show: false },
           splitArea: { show: false }
         },
         visualMap: {
           min: -maxAbs, max: maxAbs, calculable: false,
-          orient: "vertical", right: 4, top: "middle", itemWidth: 14, itemHeight: 160,
-          text: ["高", "低"], textStyle: { color: "#64748b", fontSize: 10 },
+          orient: "vertical", right: 22, top: 108, itemWidth: 10, itemHeight: legendHeight,
+          text: ["高收益", "低收益"], textGap: 10, textStyle: { color: "#64748b", fontSize: 10, fontWeight: 600 },
           formatter: v => (v * 100).toFixed(1) + "%",
-          inRange: { color: ["#dc2626", "#fca5a5", "#fee2e2", "#f8fafc", "#dcfce7", "#86efac", "#16a34a"] }
+          inRange: { color: ["#b91c1c", "#ef8a8a", "#fee2e2", "#f8fafc", "#d9f99d", "#65c98a", "#0f766e"] }
         },
         series: [{
           type: "heatmap", data: heatData,
+          animationDuration: 350,
           label: {
             show: showLabel,
-            fontSize: years.length <= 5 ? 12 : years.length <= 8 ? 10 : 9,
-            formatter: p => (p.data[2] * 100).toFixed(1) + "%",
-            color: "#1e293b"
+            fontSize: years.length <= 5 ? 11 : 10,
+            fontWeight: 700,
+            formatter: p => {
+              const pct = p.data[2] * 100;
+              const sign = pct > 0 ? "+" : "";
+              return `${sign}${pct.toFixed(1)}%`;
+            },
+            color: "#1e293b",
+            overflow: "truncate"
           },
           emphasis: {
             itemStyle: {
-              shadowBlur: 10,
-              shadowColor: "rgba(0,0,0,0.2)",
-              borderColor: "#333",
+              shadowBlur: 14,
+              shadowColor: "rgba(15,23,42,0.18)",
+              borderColor: "#0f172a",
               borderWidth: 1
             }
           },
-          itemStyle: { borderColor: "#fff", borderWidth: 2, borderRadius: 2 }
+          itemStyle: { borderColor: "#fff", borderWidth: 3, borderRadius: 4 }
         }]
-      });
+      }, true);
+      requestAnimationFrame(() => monthlyHeatmapChart.resize());
+    } else if (monthlyHeatmapChart) {
+      monthlyHeatmapChart.clear();
     }
   }
   /* ────────────────────────────────────────────────
@@ -724,7 +766,10 @@
   function renderMetrics(metrics = {}, comparisonMetrics = []) {
     document.getElementById("metricsContainer").innerHTML = metricsConfig.map(([key, label, mode]) => `
       <div class="metric">
-        <div class="name">${label}</div>
+        <div class="name-row">
+          <div class="name">${label}</div>
+          <span class="metric-info" tabindex="0" aria-label="${label}说明：${metricDescriptions[key]}" title="${metricDescriptions[key]}" data-tooltip="${metricDescriptions[key]}">i</span>
+        </div>
         <div class="value ${metricColorClass(key, metrics[key])}">${formatMetric(metrics[key], mode)}</div>
         ${
           comparisonMetrics.length
@@ -1628,7 +1673,11 @@ function renderBacktestNotes(result = null) {
     clearTimeout(resizeTimer);
     resizeTimer = setTimeout(() => {
       if (state.chart) state.chart.resize();
-      if (monthlyHeatmapChart) monthlyHeatmapChart.resize();
+      if (state.lastResult?.periodic_returns) {
+        renderPeriodicReturns(state.lastResult.periodic_returns);
+      } else if (monthlyHeatmapChart) {
+        monthlyHeatmapChart.resize();
+      }
     }, 150);
   });
 
