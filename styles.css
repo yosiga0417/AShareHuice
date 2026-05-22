@@ -1,14 +1,63 @@
 :root {
-      --bg: #f3f6fb;
-      --panel: #ffffff;
-      --text: #1e293b;
-      --subtle: #64748b;
-      --primary: #0057b8;
-      --primary-soft: #e7f0ff;
-      --danger: #b91c1c;
-      --border: #dbe4ef;
-      --shadow: 0 2px 10px rgba(15, 23, 42, 0.06);
+      /* ── Layout ── */
       --sidebar-w: 440px;
+
+      /* ── Color: Semantic tokens ── */
+      --bg:              #f3f6fb;
+      --surface:         #ffffff;
+      --surface-subtle:  #f8fafc;
+      --text:            #1e293b;
+      --text-dark:       #0f172a;
+      --text-muted:      #334155;
+      --subtle:          #64748b;
+      --subtle-light:    #94a3b8;
+      --primary:         #0057b8;
+      --primary-soft:    #e7f0ff;
+      --primary-border:  #bfdbfe;
+      --secondary:       #334155;
+      --positive:        #0f766e;
+      --positive-light:  #ecfeff;
+      --positive-border: #99f6e4;
+      --danger:          #b91c1c;
+      --danger-light:    #fee2e2;
+      --danger-border:   #fecaca;
+      --warning:         #c2410c;
+      --warning-light:   #fff7ed;
+      --warning-border:  #fed7aa;
+      --border:          #dbe4ef;
+      --border-light:    #edf2f7;
+      --tooltip-bg:      #0f172a;
+      --tooltip-text:    #f8fafc;
+      --track-bg:        #dbe7f5;
+
+      /* ── Spacing scale ── */
+      --space-1: 4px;
+      --space-2: 6px;
+      --space-3: 8px;
+      --space-4: 10px;
+      --space-5: 12px;
+      --space-6: 13px;
+      --space-7: 15px;
+
+      /* ── Border radius ── */
+      --radius-sm:   8px;
+      --radius-md:   10px;
+      --radius-lg:   14px;
+      --radius-full: 999px;
+
+      /* ── Shadows ── */
+      --shadow-sm: 0 1px 3px rgba(15, 23, 42, 0.04);
+      --shadow:    0 2px 10px rgba(15, 23, 42, 0.06);
+      --shadow-lg: 0 4px 18px rgba(0, 87, 184, 0.38), 0 1px 4px rgba(0, 0, 0, 0.12);
+
+      /* ── Font sizes ── */
+      --text-xs:   10px;
+      --text-sm:   11px;
+      --text-base: 12px;
+      --text-md:   13px;
+      --text-lg:   14px;
+      --text-xl:   17px;
+      --text-2xl:  20px;
     }
 
     * { box-sizing: border-box; }
@@ -846,4 +895,41 @@
       width: 12px;
       height: 3px;
       border-radius: 2px;
+    }
+
+    /* ── Auto-normalize toggle ── */
+    .auto-norm-label {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      font-size: 11px;
+      color: var(--subtle);
+      cursor: pointer;
+      user-select: none;
+      white-space: nowrap;
+      padding: 3px 8px;
+      border-radius: 4px;
+      border: 1px solid var(--border);
+      background: var(--bg);
+      transition: border-color 0.15s, background 0.15s;
+    }
+    .auto-norm-label:has(input:checked) {
+      border-color: var(--primary);
+      background: var(--primary-soft);
+      color: var(--primary);
+    }
+    .auto-norm-label input { margin: 0; accent-color: var(--primary); }
+
+    /* ── Holdings evolution chart ── */
+    #holdingsChart {
+      margin-top: 12px;
+      width: 100%;
+      min-height: 360px;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.96) 0%, rgba(248, 251, 255, 0.98) 100%),
+        radial-gradient(circle at 20% 0%, rgba(0, 87, 184, 0.08), transparent 32%);
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9);
+      overflow: hidden;
     }

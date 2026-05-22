@@ -101,16 +101,33 @@ def compute_nav_series(
     stamp_duty_rate: float = 0.0,
     slippage_rate: float = 0.0,
     daily_rf_rate: float = 0.0,
-) -> Tuple[pd.Series, List[str], List[Dict[str, object]]]:
-    """Compute NAV series with optional transaction costs and cash support."""
+    track_top_n: int = 0,
+) -> Tuple[pd.Series, List[str], List[Dict[str, object]], Optional[List[Dict[str, object]]]]:
+    """Compute NAV series with optional transaction costs and cash support.
+
+    Returns:
+        nav_series, applied_rebalances, cost_log, holdings_evolution
+        holdings_evolution is None if track_top_n <= 0.
+    """
     trading_dates = close_df.index
-    returns_array = close_df.pct_change().replace([np.inf, -np.inf], np.nan).to_numpy(
-        dtype=np.float64, copy=False,
-    )
+    date_count = len(trading_dates)
+    returns_array = close_df.pct_change().to_numpy(dtype=np.float64, copy=True)
+    np.nan_to_num(returns_array, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
     symbol_index = {code: idx for idx, code in enumerate(close_df.columns)}
+    reverse_index = {idx: code for code, idx in symbol_index.items()}
     symbol_count = len(symbol_index)
     cost_rate = 2.0 * commission_rate + stamp_duty_rate + 2.0 * slippage_rate
     has_cost = cost_rate > 0.0
+
+    # ── Holdings tracking ──
+    do_track = track_top_n > 0
+    holdings_dates: List[str] = []
+    holdings_matrix: Optional[np.ndarray] = None
+    holdings_cash_values: Optional[np.ndarray] = None
+    if do_track:
+        holdings_dates = [str(pd.Timestamp(dt).date()) for dt in trading_dates]
+        holdings_matrix = np.empty((date_count, symbol_count), dtype=np.float64)
+        holdings_cash_values = np.empty(date_count, dtype=np.float64)
 
     plan_vectors = [
         (plan.effective_date,
@@ -140,45 +157,45 @@ def compute_nav_series(
             active_plan_idx += 1
         rebalance_schedule[pos] = (plan_vectors[active_plan_idx][1], plan_vectors[active_plan_idx][2])
 
-    nav_values = np.empty(len(trading_dates), dtype=np.float64)
+    nav_values = np.empty(date_count, dtype=np.float64)
     nav_values[0] = 1.0
     applied_rebalances = [str(first_trade_day.date())]
     cost_log: List[Dict[str, object]] = []
     position_values = np.empty(symbol_count, dtype=np.float64)
+    weight_delta = np.empty(symbol_count, dtype=np.float64) if has_cost else None
 
-    for idx in range(1, len(trading_dates)):
+    # Record initial holdings
+    if holdings_matrix is not None and holdings_cash_values is not None:
+        holdings_matrix[0] = weights
+        holdings_cash_values[0] = cash_weight
+
+    for idx in range(1, date_count):
         today_ret = returns_array[idx]
-        valid_mask = np.isfinite(today_ret)
-
-        # Equity return
-        if valid_mask.any() and weights[valid_mask].sum() > 0:
-            equity_ret = float(np.dot(weights[valid_mask], today_ret[valid_mask]))
-        else:
-            equity_ret = 0.0
+        equity_ret = float(np.dot(weights, today_ret))
 
         # Portfolio return = equity + cash
         portfolio_ret = equity_ret + cash_weight * daily_rf_rate
         nav_values[idx] = nav_values[idx - 1] * (1.0 + portfolio_ret)
 
         # Update positions
-        np.copyto(position_values, weights)
-        if valid_mask.any():
-            position_values[valid_mask] *= 1.0 + today_ret[valid_mask]
+        np.multiply(weights, today_ret, out=position_values)
+        position_values += weights
         np.maximum(position_values, 0.0, out=position_values)
 
         # Drifted weights
         total_value = float(position_values.sum()) + cash_weight
         if total_value > 0.0:
-            weights = position_values / total_value
+            np.divide(position_values, total_value, out=weights)
             cash_weight = cash_weight * (1.0 + daily_rf_rate) / (nav_values[idx] / nav_values[idx - 1])
 
         # Rebalance
         if idx in rebalance_schedule:
             target_weights, target_cash = rebalance_schedule[idx]
 
-            if has_cost:
-                weight_change = weights - target_weights
-                sells = float(np.maximum(weight_change, 0).sum()) + max(0.0, cash_weight - target_cash)
+            if has_cost and weight_delta is not None:
+                np.subtract(weights, target_weights, out=weight_delta)
+                np.maximum(weight_delta, 0.0, out=weight_delta)
+                sells = float(weight_delta.sum()) + max(0.0, cash_weight - target_cash)
                 turnover = sells
                 if turnover > 0.0:
                     cost = turnover * cost_rate
@@ -191,12 +208,60 @@ def compute_nav_series(
                     })
                     position_values *= (1.0 - cost)
 
-            weights = target_weights.copy()
+            np.copyto(weights, target_weights)
             cash_weight = target_cash
             applied_rebalances.append(str(pd.Timestamp(trading_dates[idx]).date()))
 
+        # ── Record holdings after each day ──
+        if holdings_matrix is not None and holdings_cash_values is not None:
+            holdings_matrix[idx] = weights
+            holdings_cash_values[idx] = cash_weight
+
     nav_series = pd.Series(nav_values, index=trading_dates, name="nav")
-    return nav_series, applied_rebalances, cost_log
+
+    # ── Build holdings evolution output ──
+    holdings_evolution: Optional[List[Dict[str, object]]] = None
+    if holdings_matrix is not None and holdings_cash_values is not None:
+        latest_weights = holdings_matrix[-1]
+        positive_indices = np.flatnonzero(latest_weights > 1e-10)
+        if positive_indices.size:
+            ranked_indices = positive_indices[np.argsort(latest_weights[positive_indices])[::-1]]
+            selected_indices = ranked_indices[:track_top_n].tolist()
+        else:
+            selected_indices = []
+        holdings_evolution = [
+            {
+                "code": reverse_index[idx],
+                "data": [
+                    {"date": holdings_dates[i], "weight": round(float(weight), 6)}
+                    for i, weight in enumerate(holdings_matrix[:, idx])
+                ],
+            }
+            for idx in selected_indices
+        ]
+
+        if selected_indices:
+            other_values = holdings_matrix.sum(axis=1) - holdings_matrix[:, selected_indices].sum(axis=1)
+        else:
+            other_values = holdings_matrix.sum(axis=1)
+        np.maximum(other_values, 0.0, out=other_values)
+        other_data = [
+            {"date": holdings_dates[i], "weight": round(float(weight), 6)}
+            for i, weight in enumerate(other_values)
+        ]
+        if np.any(other_values > 0.0001):
+            holdings_evolution.append({"code": "其他", "data": other_data})
+
+        if np.any(holdings_cash_values > 0.0001):
+            holdings_evolution.append({
+                "code": "现金",
+                "data": [
+                    {"date": holdings_dates[i], "weight": round(float(cash), 6)}
+                    for i, cash in enumerate(holdings_cash_values)
+                ],
+            })
+
+    return nav_series, applied_rebalances, cost_log, holdings_evolution
 
 
 def compute_metrics(nav_series: pd.Series, risk_free_rate: float) -> Dict[str, object]:

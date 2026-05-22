@@ -314,7 +314,7 @@ def fetch_benchmark_nav(
             fetch_start, fetch_end = expand_fetch_range(gap_start, gap_end, cached_ranges)
             gap_series = fetch_benchmark_close_series_remote(code, fetch_start, fetch_end)
             cached_series = merge_price_series(cached_series, gap_series)
-            cached_ranges = cache.normalize_cached_ranges(cached_ranges + [(gap_start, gap_end)])
+            cached_ranges = normalize_cached_ranges(cached_ranges + [(gap_start, gap_end)])
             cache_dirty = True
             ranges_dirty = True
         if cache_dirty:

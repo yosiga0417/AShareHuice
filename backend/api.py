@@ -20,6 +20,7 @@ from backend.engine import (
     compute_periodic_returns,
     drop_unavailable_symbols,
     normalize_stock_code,
+    normalize_weights_exact,
     normalize_weight_map,
     parse_weight,
 )
@@ -325,10 +326,20 @@ def merge_components(components: List[ComponentInput]) -> Tuple[Dict[str, float]
 
 def build_preview_components(components: List[ComponentInput]) -> List[Dict[str, object]]:
     merged_weights, merged_names = merge_components(components)
-    return [
+    preview = [
         {"code": code, "name": merged_names.get(code, ""), "weight": weight}
         for code, weight in merged_weights.items()
     ]
+    total = sum(float(item["weight"]) for item in preview)
+    if total > 100.0001:
+        normalized = normalize_weights_exact(
+            [float(item["weight"]) for item in preview],
+            decimals=4,
+            target_sum=100,
+        )
+        for item, weight in zip(preview, normalized):
+            item["weight"] = weight
+    return preview
 
 
 def sanitize_components(components: List[ComponentInput], allow_cash: bool = False) -> Tuple[List[Dict[str, object]], Dict[str, float], float]:
@@ -419,13 +430,30 @@ def execute_backtest(
         mode=request.rebalance_mode,
         custom_dates=request.custom_rebalance_dates,
     )
-    nav_series, applied_rebalance_dates, cost_log = compute_nav_series(
+
+    # Build code→name mapping from all plans
+    code_names: Dict[str, str] = {}
+    for plan in aligned_plans:
+        for comp in plan.components:
+            code = str(comp.get("code", ""))
+            name = str(comp.get("name", ""))
+            if code and name and code not in code_names:
+                code_names[code] = name
+
+    nav_series, applied_rebalance_dates, cost_log, holdings_evolution = compute_nav_series(
         close_df, aligned_plans, primary_rebalance_dates,
         commission_rate=request.commission_rate,
         stamp_duty_rate=request.stamp_duty_rate,
         slippage_rate=request.slippage_rate,
         daily_rf_rate=daily_rf_rate,
+        track_top_n=15,
     )
+    # Enrich holdings evolution with names
+    if holdings_evolution:
+        for series_item in holdings_evolution:
+            code = str(series_item.get("code", ""))
+            series_item["name"] = code_names.get(code, code)
+
     metrics = compute_metrics(nav_series, request.risk_free_rate)
     periodic_returns = compute_periodic_returns(nav_series)
     comparison_metrics = []
@@ -436,7 +464,7 @@ def execute_backtest(
             mode=mode,
             custom_dates=[],
         )
-        comparison_nav_series, _, _ = compute_nav_series(
+        comparison_nav_series, _, _, _ = compute_nav_series(
             close_df, aligned_plans, comparison_rebalance_dates,
             daily_rf_rate=daily_rf_rate,
         )
@@ -494,6 +522,7 @@ def execute_backtest(
             }
             for plan in aligned_plans
         ],
+        "holdings_evolution": holdings_evolution,
         "warnings": warnings,
     }
     report(1.0, "completed", "回测完成。")

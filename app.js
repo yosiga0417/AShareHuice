@@ -1,6 +1,7 @@
 /* ────────────────────────────────────────────────
      State
   ──────────────────────────────────────────────── */
+  // app.js v2 — holdings chart + auto-normalize (2026-05-15)
   const STORAGE_KEY = "a_stock_backtest_v1";
   const COMPARISON_STORAGE_KEY = "a_stock_backtest_comparisons_v1";
   const LAST_RESULT_KEY = "a_stock_backtest_last_result_v1";
@@ -81,24 +82,67 @@
     return rows.reduce((acc, row) => acc + (Number(row.weight) || 0), 0);
   }
 
-  function normalizeWeights(rows, decimals = 4) {
-    const validRows = rows.filter(row => normalizeCode(row.code));
-    if (!validRows.length) return;
-    let baseWeights = validRows.map(row => Number(row.weight) || 0);
-    const total = baseWeights.reduce((a, b) => a + b, 0);
-    if (total <= 0) baseWeights = validRows.map(() => 1);
+  function assignWeightsToTarget(rows, baseWeights, target = 100, decimals = 4) {
+    if (!rows.length) return false;
+    const cleanWeights = baseWeights.map(weight => Math.max(0, Number(weight) || 0));
+    const total = cleanWeights.reduce((a, b) => a + b, 0);
+    if (total <= 0) return false;
     const scale = 10 ** decimals;
-    const sum = baseWeights.reduce((a, b) => a + b, 0);
-    const rawUnits = baseWeights.map(w => (w / sum) * 100 * scale);
+    const targetUnits = Math.round(target * scale);
+    const rawUnits = cleanWeights.map(w => (w / total) * targetUnits);
     const floorUnits = rawUnits.map(v => Math.floor(v));
-    let remain = Math.round(100 * scale - floorUnits.reduce((a, b) => a + b, 0));
+    let remain = targetUnits - floorUnits.reduce((a, b) => a + b, 0);
     const fractions = rawUnits
       .map((v, i) => ({ i, frac: v - floorUnits[i] }))
       .sort((a, b) => b.frac - a.frac);
     for (let idx = 0; idx < remain && idx < fractions.length; idx++) {
       floorUnits[fractions[idx].i] += 1;
     }
-    validRows.forEach((row, idx) => { row.weight = floorUnits[idx] / scale; });
+    rows.forEach((row, idx) => { row.weight = floorUnits[idx] / scale; });
+    return true;
+  }
+
+  function normalizeWeights(rows, decimals = 4) {
+    const validRows = rows.filter(row => normalizeCode(row.code));
+    if (!validRows.length) return;
+    let baseWeights = validRows.map(row => Number(row.weight) || 0);
+    const total = baseWeights.reduce((a, b) => a + b, 0);
+    if (total <= 0) baseWeights = validRows.map(() => 1);
+    assignWeightsToTarget(validRows, baseWeights, 100, decimals);
+  }
+
+  function capOverweightTo100(rows, decimals = 4) {
+    const validRows = rows.filter(row => normalizeCode(row.code));
+    const total = sumWeights(validRows);
+    if (total <= 100.0001) return { changed: false, total };
+    const ok = assignWeightsToTarget(
+      validRows,
+      validRows.map(row => Number(row.weight) || 0),
+      100,
+      decimals
+    );
+    return { changed: ok, total };
+  }
+
+  function autoNormalizeWeights(plan, editedRowId) {
+    const validRows = plan.components.filter(row => normalizeCode(row.code));
+    if (validRows.length < 2) return false;
+    const editedRow = validRows.find(r => r.id === editedRowId);
+    if (!editedRow) return false;
+    const editedWeight = Math.max(0, Number(editedRow.weight) || 0);
+    const otherRows = validRows.filter(r => r.id !== editedRowId);
+    const remaining = Math.max(0, 100 - editedWeight);
+    const otherTotal = otherRows.reduce((s, r) => s + Math.max(0, Number(r.weight) || 0), 0);
+    if (otherTotal <= 1e-10) {
+      const each = remaining / otherRows.length;
+      otherRows.forEach(r => { r.weight = each; });
+    } else {
+      const scale = remaining / otherTotal;
+      otherRows.forEach(r => { r.weight = Math.max(0, (Number(r.weight) || 0)) * scale; });
+    }
+    // Precise normalization
+    const allWeights = validRows.map(r => Math.max(0, Number(r.weight) || 0));
+    return assignWeightsToTarget(validRows, allWeights, 100, 4);
   }
 
   function distributeRemainingWeights(rows, decimals = 4) {
@@ -231,6 +275,7 @@
      Periodic returns rendering
   ──────────────────────────────────────────────── */
   let monthlyHeatmapChart = null;
+  let holdingsChart = null;
 
   function renderPeriodicReturns(periodicData) {
     const container = document.getElementById("periodicReturns");
@@ -372,6 +417,7 @@
         plans: state.plans.map(plan => ({
           id: plan.id,
           effectiveDate: plan.effectiveDate,
+          autoNormalize: plan.autoNormalize || false,
           components: plan.components.map(r => ({
             id: r.id, code: r.code, name: r.name, weight: r.weight
           }))
@@ -423,7 +469,8 @@
     const plan = {
       id: state.nextPlanId++,
       effectiveDate,
-      components: components?.map(c => makeRow(c.code, c.name, c.weight)) ?? [makeRow()]
+      components: components?.map(c => makeRow(c.code, c.name, c.weight)) ?? [makeRow()],
+      autoNormalize: false
     };
     return plan;
   }
@@ -467,6 +514,7 @@
       exported_at: new Date().toISOString(),
       plans: state.plans.map(plan => ({
         effectiveDate: plan.effectiveDate,
+        autoNormalize: plan.autoNormalize || false,
         components: plan.components.map(r => ({
           code: r.code, name: r.name, weight: r.weight
         }))
@@ -493,10 +541,14 @@
         const data = JSON.parse(reader.result);
         if (!data?.plans?.length) throw new Error("文件中没有有效的调仓计划");
         syncPlansFromDom();
-        const imported = data.plans.map(p => createPlan(
-          p.effectiveDate || "",
-          (p.components || []).map(c => makeRow(c.code, c.name, c.weight))
-        ));
+        const imported = data.plans.map(p => {
+          const plan = createPlan(
+            p.effectiveDate || "",
+            (p.components || []).map(c => makeRow(c.code, c.name, c.weight))
+          );
+          plan.autoNormalize = p.autoNormalize || false;
+          return plan;
+        });
         state.plans = imported;
         state.expandedPlans.clear();
         imported.forEach(p => state.expandedPlans.add(p.id));
@@ -603,6 +655,10 @@
               <button class="light" data-action="add-row" data-plan-id="${plan.id}">＋ 成分股</button>
               <button class="light" data-action="fill-remaining" data-plan-id="${plan.id}">分配剩余</button>
               <button class="secondary" data-action="equal-weight" data-plan-id="${plan.id}">均等权重</button>
+              <label class="auto-norm-label" style="margin-left:4px;">
+                <input type="checkbox" data-action="toggle-auto-normalize" data-plan-id="${plan.id}"
+                  ${plan.autoNormalize ? "checked" : ""} /> 自动归一化
+              </label>
               <button class="danger" data-action="remove-plan" data-plan-id="${plan.id}"
                 ${state.plans.length <= 1 ? "disabled" : ""}>删除计划</button>
             </div>
@@ -1045,6 +1101,281 @@
     });
   }
 
+  // ── Holdings evolution stacked area chart ──
+  function renderHoldingsChart(holdingsEvolution = [], rebalanceDates = []) {
+    const container = document.getElementById("holdingsChart");
+    if (!holdingsEvolution?.length) {
+      if (holdingsChart) {
+        holdingsChart.dispose();
+        holdingsChart = null;
+      }
+      container.innerHTML = "";
+      container.style.display = "none";
+      return;
+    }
+
+    container.style.display = "block";
+
+    // Collect all dates from first series (needed for height calc)
+    const dates = (holdingsEvolution[0]?.data || []).map(d => d.date);
+    if (!dates.length) {
+      container.style.display = "none";
+      return;
+    }
+
+    // Set height BEFORE echarts.init so it has proper dimensions
+    const chartHeight = Math.min(540, Math.max(400, 340 + dates.length * 0.035));
+    container.style.height = `${chartHeight}px`;
+
+    try {
+      if (!holdingsChart) {
+        container.innerHTML = "";
+        holdingsChart = echarts.init(container);
+      } else {
+        holdingsChart.resize();
+      }
+    } catch (e) {
+      console.error("holdingsChart init failed:", e);
+      container.style.display = "none";
+      return;
+    }
+
+    const HOLDINGS_COLORS = [
+      "#2563eb", "#0f766e", "#f59e0b", "#dc2626", "#7c3aed",
+      "#0891b2", "#ea580c", "#65a30d", "#db2777", "#4f46e5",
+      "#14b8a6", "#a16207", "#be123c", "#0284c7", "#9333ea"
+    ];
+
+    const formatWeight = value => {
+      const pct = Number(value) * 100;
+      if (!Number.isFinite(pct)) return "-";
+      return pct < 0.01 && pct > 0 ? "小于0.01%" : `${pct.toFixed(2)}%`;
+    };
+
+    const seriesMeta = [];
+    const series = holdingsEvolution.map((item, idx) => {
+      const isOther = item.code === "其他";
+      const isCash = item.code === "现金";
+      const color = isOther ? "#94a3b8" : isCash ? "#cbd5e1" :
+        HOLDINGS_COLORS[idx % HOLDINGS_COLORS.length];
+      const displayName = item.name && item.name !== item.code
+        ? `${item.name}(${item.code})`
+        : (item.name || item.code);
+      const dataMap = {};
+      (item.data || []).forEach(d => { dataMap[d.date] = Number(d.weight); });
+      const values = dates.map(d => {
+        const v = dataMap[d];
+        return v != null ? Number(v) : null;
+      });
+      const latestValue = Number(values[values.length - 1]) || 0;
+      seriesMeta.push({ name: displayName, code: item.code, color, value: latestValue });
+
+      const baseStyle = {
+        name: displayName,
+        data: values,
+        type: "line",
+        stack: "holdings",
+        connectNulls: true,
+        areaStyle: {
+          color,
+          opacity: isOther ? 0.24 : isCash ? 0.20 : 0.74
+        },
+        smooth: false,
+        showSymbol: false,
+        symbol: "circle",
+        symbolSize: 5,
+        emphasis: {
+          focus: "series",
+          lineStyle: { width: isOther || isCash ? 1.4 : 2.2 },
+          areaStyle: { opacity: isOther || isCash ? 0.34 : 0.88 }
+        },
+        lineStyle: {
+          width: isOther || isCash ? 0.9 : 1.25,
+          color,
+          opacity: isOther || isCash ? 0.75 : 0.95
+        },
+        itemStyle: { color }
+      };
+
+      if (isOther) {
+        baseStyle.lineStyle.type = "dotted";
+      } else if (isCash) {
+        baseStyle.lineStyle.type = "dotted";
+      }
+
+      return baseStyle;
+    });
+
+    // Rebalance markers for xAxis
+    const rebalanceDateSet = new Set(rebalanceDates);
+    const dateSet = new Set(dates);
+    const markLineData = rebalanceDates
+      .filter(d => dateSet.has(d))
+      .map(d => ({ xAxis: d }));
+    const latestDate = dates[dates.length - 1];
+    const activeHoldings = seriesMeta
+      .filter(item => item.value > 0.000001)
+      .sort((a, b) => b.value - a.value);
+    const topHolding = activeHoldings[0];
+    const subtitleParts = [
+      `${dates[0]} 至 ${latestDate}`,
+      `当前 ${activeHoldings.length} 个有效仓位`
+    ];
+    if (topHolding) subtitleParts.push(`最大 ${topHolding.name} ${formatWeight(topHolding.value)}`);
+    if (rebalanceDates?.length) subtitleParts.push(`${rebalanceDates.length} 次调仓`);
+
+    holdingsChart.setOption({
+      backgroundColor: "transparent",
+      color: HOLDINGS_COLORS,
+      animationDuration: 450,
+      animationDurationUpdate: 300,
+      title: {
+        text: "持仓份额变化",
+        subtext: subtitleParts.join(" · "),
+        left: 20,
+        top: 14,
+        textStyle: { color: "#0f172a", fontSize: 14, fontWeight: 700 },
+        subtextStyle: { color: "#64748b", fontSize: 11, lineHeight: 16 }
+      },
+      legend: {
+        type: "scroll",
+        top: 54,
+        left: 18,
+        right: 18,
+        height: 28,
+        itemWidth: 10,
+        itemHeight: 10,
+        itemGap: 12,
+        icon: "roundRect",
+        pageIconColor: "#2563eb",
+        pageIconInactiveColor: "#cbd5e1",
+        pageTextStyle: { color: "#64748b", fontSize: 10 },
+        textStyle: { color: "#334155", fontSize: 11 },
+        formatter: name => name.length > 16 ? `${name.slice(0, 15)}...` : name
+      },
+      tooltip: {
+        trigger: "axis",
+        confine: true,
+        axisPointer: {
+          type: "line",
+          lineStyle: { color: "#64748b", width: 1, type: "dashed", opacity: 0.65 }
+        },
+        backgroundColor: "#ffffff",
+        borderColor: "#dbe4ef",
+        borderWidth: 1,
+        padding: [10, 12],
+        textStyle: { color: "#1e293b", fontSize: 12 },
+        extraCssText: "box-shadow:0 12px 28px rgba(15,23,42,.14);border-radius:8px;",
+        formatter(params) {
+          if (!params.length) return "";
+          const date = params[0].axisValue;
+          const sorted = [...params]
+            .filter(p => p.seriesName !== "调仓日")
+            .sort((a, b) => (Number(b.value) || 0) - (Number(a.value) || 0));
+          const visible = sorted.filter(p => Number(p.value) > 0);
+          let html = `<div style="display:flex;align-items:center;gap:8px;margin-bottom:7px;font-weight:700;color:#0f172a;">` +
+            `<span>${date}</span>` +
+            (rebalanceDateSet.has(date)
+              ? `<span style="font-size:10px;font-weight:700;color:#92400e;background:#fef3c7;border:1px solid #fde68a;border-radius:999px;padding:1px 7px;">调仓日</span>`
+              : "") +
+            `</div>`;
+          for (const p of visible.slice(0, 10)) {
+            const rawValue = Number(p.value);
+            if (!Number.isFinite(rawValue)) continue;
+            html += `<div style="display:grid;grid-template-columns:10px minmax(120px,1fr) auto;gap:7px;align-items:center;margin:3px 0;">` +
+              `<span style="width:8px;height:8px;border-radius:2px;background:${p.color};display:inline-block;"></span>` +
+              `<span style="color:#475569;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${p.seriesName}</span>` +
+              `<b style="color:#0f172a;">${formatWeight(rawValue)}</b>` +
+              `</div>`;
+          }
+          if (visible.length > 10) {
+            const rest = visible.slice(10).reduce((sum, p) => sum + (Number(p.value) || 0), 0);
+            html += `<div style="margin-top:6px;padding-top:6px;border-top:1px solid #e2e8f0;color:#64748b;">` +
+              `其余 ${visible.length - 10} 项合计 <b style="color:#334155;">${formatWeight(rest)}</b></div>`;
+          }
+          if (!visible.length) html += `<span style="color:#64748b;">当日无有效持仓份额</span>`;
+          return html;
+        }
+      },
+      grid: { top: 102, left: 52, right: 24, bottom: 66, containLabel: true },
+      xAxis: {
+        type: "category", data: dates,
+        boundaryGap: false,
+        axisLabel: {
+          color: "#64748b",
+          fontSize: 10,
+          hideOverlap: true,
+          margin: 12,
+          rotate: dates.length > 700 ? 30 : 0
+        },
+        axisLine: { show: false },
+        axisTick: { show: false },
+        splitLine: { show: false }
+      },
+      yAxis: {
+        type: "value", min: 0, max: 1,
+        splitNumber: 4,
+        axisLabel: {
+          color: "#64748b",
+          fontSize: 10,
+          formatter: v => (v * 100).toFixed(0) + "%"
+        },
+        axisLine: { show: false },
+        axisTick: { show: false },
+        splitLine: { lineStyle: { color: "#e8eef6", type: "dashed" } }
+      },
+      dataZoom: [
+        {
+          type: "inside",
+          xAxisIndex: 0,
+          filterMode: "none",
+          minSpan: 5,
+          zoomOnMouseWheel: true,
+          moveOnMouseMove: true
+        },
+        {
+          type: "slider",
+          xAxisIndex: 0,
+          filterMode: "none",
+          height: 18,
+          left: 52,
+          right: 24,
+          bottom: 22,
+          showDetail: false,
+          brushSelect: false,
+          borderColor: "transparent",
+          backgroundColor: "#f1f5f9",
+          fillerColor: "rgba(37,99,235,0.16)",
+          handleSize: "80%",
+          handleStyle: { color: "#ffffff", borderColor: "#94a3b8", borderWidth: 1 },
+          moveHandleStyle: { color: "#2563eb" },
+          dataBackground: {
+            lineStyle: { color: "#cbd5e1" },
+            areaStyle: { color: "#e2e8f0" }
+          },
+          selectedDataBackground: {
+            lineStyle: { color: "#2563eb" },
+            areaStyle: { color: "rgba(37,99,235,0.14)" }
+          }
+        }
+      ],
+      series: [
+        ...series,
+        ...(markLineData.length ? [{
+          name: "调仓日",
+          type: "line", data: [], showSymbol: false, silent: true,
+          markLine: {
+            silent: true, symbol: "none",
+            lineStyle: { color: "#f59e0b", type: "dashed", width: 1, opacity: 0.55 },
+            label: { show: false },
+            data: markLineData
+          },
+          tooltip: { show: false }
+        }] : [])
+      ]
+    }, { notMerge: true });
+  }
+
   // Re-render chart using stored result (called when benchmark/comparison checkboxes change)
   function refreshChart() {
     if (!state.lastResult) return;
@@ -1055,6 +1386,7 @@
       r.benchmark_nav || {},
       r.rebalance_holdings || {}
     );
+    renderHoldingsChart(r.holdings_evolution || [], r.applied_rebalance_dates || []);
   }
 
   function renderReport(result) {
@@ -1190,6 +1522,19 @@ function renderBacktestNotes(result = null) {
 
   function collectPayload() {
     syncPlansFromDom();
+    let normalizedOverweight = false;
+    state.plans.forEach(plan => {
+      const total = sumWeights(plan.components.filter(row => normalizeCode(row.code)));
+      if (total > 100.0001 && total <= 100.05) {
+        const result = capOverweightTo100(plan.components);
+        normalizedOverweight = normalizedOverweight || result.changed;
+      }
+    });
+    if (normalizedOverweight) {
+      renderPlans();
+      saveToStorage();
+    }
+
     const plans = state.plans
       .map(plan => ({
         effective_date: plan.effectiveDate,
@@ -1279,10 +1624,15 @@ function renderBacktestNotes(result = null) {
     if (!plan) { upsertStatus("未找到目标调仓计划。"); return; }
     if (!state.previewComponents.length) { upsertStatus("没有可应用的解析结果。"); return; }
     plan.components = state.previewComponents.map(item => makeRow(item.code, item.name, item.weight));
+    const overweight = capOverweightTo100(plan.components);
     state.expandedPlans.add(plan.id);
     renderPlans();
     saveToStorage();
-    upsertStatus(`已将解析结果应用到调仓计划（${plan.effectiveDate}）。`);
+    if (overweight.changed) {
+      upsertStatus(`已将解析结果应用到调仓计划（${plan.effectiveDate}），原权重合计 ${overweight.total.toFixed(4)}%，已自动规整到 100%。`);
+    } else {
+      upsertStatus(`已将解析结果应用到调仓计划（${plan.effectiveDate}）。`);
+    }
   }
 
   async function waitForBacktestTask(taskId, backend) {
@@ -1338,6 +1688,7 @@ function renderBacktestNotes(result = null) {
       data.benchmark_nav || {},
       data.rebalance_holdings || {}
     );
+    renderHoldingsChart(data.holdings_evolution || [], data.applied_rebalance_dates || []);
     renderReport(data);
     renderPeriodicReturns(data.periodic_returns);
     renderBacktestNotes(data);
@@ -1511,7 +1862,26 @@ function renderBacktestNotes(result = null) {
         return;
       }
 
+      // On change (blur): auto-normalize if enabled
+      if (field === "weight" && plan.autoNormalize) {
+        const ok = autoNormalizeWeights(plan, rowId);
+        if (ok) {
+          upsertStatus("已自动归一化权重至 100%。");
+        }
+      }
+
       renderPlans();
+      scheduleSave();
+    }
+
+    if (action === "toggle-auto-normalize" && event.type === "change") {
+      plan.autoNormalize = actionEl.checked;
+      if (plan.autoNormalize) {
+        // Normalize on first enable
+        normalizeWeights(plan.components);
+        renderPlans();
+        upsertStatus("已开启自动归一化，修改任意权重后将自动调整其它权重保持总和 100%。");
+      }
       scheduleSave();
     }
   }
@@ -1533,6 +1903,7 @@ function renderBacktestNotes(result = null) {
       state.plans = saved.plans.map(p => ({
         id: p.id,
         effectiveDate: p.effectiveDate,
+        autoNormalize: p.autoNormalize || false,
         components: p.components.map(r => ({ id: r.id, code: r.code, name: r.name, weight: r.weight }))
       }));
       state.plans.forEach(p => state.expandedPlans.add(p.id));
@@ -1583,6 +1954,7 @@ function renderBacktestNotes(result = null) {
         lastResult.result.benchmark_nav || {},
         lastResult.result.rebalance_holdings || {}
       );
+      renderHoldingsChart(lastResult.result.holdings_evolution || [], lastResult.result.applied_rebalance_dates || []);
       renderReport(lastResult.result);
       renderPeriodicReturns(lastResult.result.periodic_returns);
       renderBacktestNotes(lastResult.result);
@@ -1673,6 +2045,7 @@ function renderBacktestNotes(result = null) {
     clearTimeout(resizeTimer);
     resizeTimer = setTimeout(() => {
       if (state.chart) state.chart.resize();
+      if (holdingsChart) holdingsChart.resize();
       if (state.lastResult?.periodic_returns) {
         renderPeriodicReturns(state.lastResult.periodic_returns);
       } else if (monthlyHeatmapChart) {
