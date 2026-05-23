@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from io import BytesIO
-import os
 import threading
 import time
 from typing import Callable, Dict, List, Optional, Tuple, Union
@@ -11,20 +10,21 @@ import pandas as pd
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
+
+from backend.config import read_positive_int_env
 from backend.engine import (
     align_plan_dates_to_trading_days,
     build_backtest_rebalance_dates,
     build_comparison_rebalance_modes,
     compute_metrics,
-    compute_nav_series,
     compute_nav_series_from_prepared,
-    prepare_nav_data,
     compute_periodic_returns,
     drop_unavailable_symbols,
     normalize_stock_code,
     normalize_weights_exact,
     normalize_weight_map,
     parse_weight,
+    prepare_nav_data,
 )
 from backend.fetch import (
     build_benchmark_fetch_codes,
@@ -52,14 +52,6 @@ from backend.models import (
 )
 
 
-def read_positive_int_env(name: str, default: int) -> int:
-    raw = os.getenv(name)
-    if raw is None:
-        return default
-    try:
-        return max(1, int(raw))
-    except ValueError:
-        return default
 
 
 app = FastAPI(

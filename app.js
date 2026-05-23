@@ -214,6 +214,22 @@
     if (hours > 0) return `${hours} 小时 ${String(minutes).padStart(2, "0")} 分 ${String(secs).padStart(2, "0")} 秒`;
     return `${minutes} 分 ${String(secs).padStart(2, "0")} 秒`;
   }
+  function escapeHtml(value) {
+    return String(value ?? "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+  }
+
+  function csvSafe(value) {
+    const s = String(value ?? "");
+    if (/[,"\n\r]/.test(s)) {
+      return '"' + s.replace(/"/g, '""') + '"';
+    }
+    return s;
+  }
 
 
   /* ────────────────────────────────────────────────
@@ -579,8 +595,8 @@
     wrap.classList.remove("is-hidden");
     tbody.innerHTML = rows.map(row => `
       <tr>
-        <td>${row.code}</td>
-        <td>${row.name || "-"}</td>
+        <td>${escapeHtml(row.code)}</td>
+        <td>${escapeHtml(row.name) || "-"}</td>
         <td>${Number(row.weight).toFixed(4)}</td>
       </tr>
     `).join("");
@@ -606,12 +622,12 @@
       const rows = plan.components.map(row => `
         <tr>
           <td>
-            <input type="text" value="${row.code}"
+            <input type="text" value="${escapeHtml(row.code)}"
               data-action="edit-cell" data-plan-id="${plan.id}" data-row-id="${row.id}" data-field="code"
               placeholder="000001" class="plan-edit-code" />
           </td>
           <td>
-            <input type="text" value="${row.name || ""}"
+            <input type="text" value="${escapeHtml(row.name)}"
               data-action="edit-cell" data-plan-id="${plan.id}" data-row-id="${row.id}" data-field="name"
               placeholder="可选" class="plan-edit-name" />
           </td>
@@ -891,14 +907,11 @@
         const bmMap = {};
         (benchmarkNavs[code] || []).forEach(item => { bmMap[item.date] = item.value; });
         let bmValues = dates.map(d => bmMap[d] ?? null);
-        // Normalise to start at 1.0 if raw index points are returned.
-        // Use the first valid value within the chart's date range as baseline.
+        // Always normalise to start at 1.0 so benchmarks align with portfolio NAV
         const firstIdx = bmValues.findIndex(v => v !== null);
-        if (firstIdx >= 0) {
+        if (firstIdx >= 0 && bmValues[firstIdx] !== 0) {
           const baseline = bmValues[firstIdx];
-          if (Math.abs(baseline) > 5) {
-            bmValues = bmValues.map(v => v !== null ? v / baseline : null);
-          }
+          bmValues = bmValues.map(v => v !== null ? v / baseline : null);
           // Back-fill nulls before first valid point so benchmark aligns from chart start
           for (let i = firstIdx - 1; i >= 0; i--) {
             bmValues[i] = bmValues[i + 1];
@@ -1137,12 +1150,6 @@
       "#14b8a6", "#a16207", "#be123c", "#0284c7", "#9333ea"
     ];
 
-    const escapeHtml = value => String(value ?? "")
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;")
-      .replace(/"/g, "&quot;")
-      .replace(/'/g, "&#39;");
 
     const formatWeight = value => {
       const pct = Number(value) * 100;
@@ -1639,7 +1646,7 @@ function renderBacktestNotes(result = null) {
       (bm[code] || []).forEach(item => { rawMap[item.date] = item.value; });
       const vals = navDates.map(d => rawMap[d] ?? null);
       const firstIdx = vals.findIndex(v => v !== null);
-      const scale = firstIdx >= 0 && Math.abs(vals[firstIdx]) > 5 ? vals[firstIdx] : 1;
+      const scale = firstIdx >= 0 && vals[firstIdx] !== 0 ? vals[firstIdx] : 1;
       bmMaps[code] = {};
       navDates.forEach((date, idx) => {
         bmMaps[code][date] = vals[idx] !== null ? vals[idx] / scale : null;
@@ -1675,7 +1682,7 @@ function renderBacktestNotes(result = null) {
     });
 
     const allRows = [headers, ...rows, ...metricsRows];
-    const csv = allRows.map(row => row.join(",")).join("\n");
+    const csv = allRows.map(row => row.map(csvSafe).join(",")).join("\n");
     const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");

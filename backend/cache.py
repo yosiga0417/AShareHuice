@@ -44,7 +44,7 @@ def ensure_benchmark_cache_dirs() -> None:
 
 
 def stock_cache_file(symbol: str) -> Path:
-    return STOCK_CACHE_DIR / f"{symbol}.csv"
+    return STOCK_CACHE_DIR / f"{symbol}.feather"
 
 
 def stock_cache_meta_file(symbol: str) -> Path:
@@ -52,7 +52,7 @@ def stock_cache_meta_file(symbol: str) -> Path:
 
 
 def benchmark_cache_file(code: str) -> Path:
-    return BENCHMARK_CACHE_DIR / f"{code}.csv"
+    return BENCHMARK_CACHE_DIR / f"{code}.feather"
 
 
 def benchmark_cache_meta_file(code: str) -> Path:
@@ -81,12 +81,17 @@ def normalize_price_series(series: pd.Series) -> pd.Series:
     return normalized
 
 
-def merge_price_series(base: pd.Series, incoming: pd.Series) -> pd.Series:
+def merge_price_series(base: pd.Series, incoming: pd.Series, skip_normalize: bool = False) -> pd.Series:
     if base is None or len(base) == 0:
-        return normalize_price_series(incoming)
+        return incoming if skip_normalize else normalize_price_series(incoming)
     if incoming is None or len(incoming) == 0:
-        return normalize_price_series(base)
-    return normalize_price_series(pd.concat([base, incoming]))
+        return base if skip_normalize else normalize_price_series(base)
+    result = pd.concat([base, incoming])
+    if skip_normalize:
+        result = result[~result.index.duplicated(keep="last")].sort_index()
+        result.name = "close"
+        return result
+    return normalize_price_series(result)
 
 
 def load_cached_series(cache_path: Path) -> pd.Series:
@@ -97,25 +102,19 @@ def load_cached_series(cache_path: Path) -> pd.Series:
 def _load_cached_series(cache_path_str: str, signature: FileSignature) -> pd.Series:
     if signature is None:
         return pd.Series(dtype="float64", name="close")
-    cache_path = Path(cache_path_str)
     try:
-        df = pd.read_csv(
-            cache_path,
-            usecols=["date", "close"],
-            dtype={"date": "string", "close": "float64"},
-        )
+        df = pd.read_feather(cache_path_str)
     except Exception:
         return pd.Series(dtype="float64", name="close")
     if df.empty:
         return pd.Series(dtype="float64", name="close")
-    date_index = pd.to_datetime(df["date"], format="%Y-%m-%d", errors="coerce")
-    close_values = pd.to_numeric(df["close"], errors="coerce")
-    valid_mask = date_index.notna() & close_values.notna()
+    # Feather preserves dtypes: date is datetime64, close is float64
+    valid_mask = df["date"].notna() & df["close"].notna()
     if not valid_mask.any():
         return pd.Series(dtype="float64", name="close")
     series = pd.Series(
-        close_values.loc[valid_mask].to_numpy(dtype="float64", copy=False),
-        index=date_index.loc[valid_mask].to_numpy(copy=False),
+        df.loc[valid_mask, "close"].to_numpy(dtype="float64", copy=False),
+        index=pd.DatetimeIndex(df.loc[valid_mask, "date"]),
         name="close",
     )
     if series.index.has_duplicates:
@@ -128,8 +127,7 @@ def save_cached_series(cache_path: Path, series: pd.Series) -> None:
     clean_series = normalize_price_series(series)
     df = clean_series.rename("close").reset_index()
     df.columns = ["date", "close"]
-    df["date"] = df["date"].dt.strftime("%Y-%m-%d")
-    df.to_csv(cache_path, index=False)
+    df.to_feather(cache_path)
 
 
 def load_cached_stock_series(symbol: str) -> pd.Series:
@@ -223,13 +221,6 @@ def save_cached_ranges(
     }
     if has_fallback:
         payload["has_fallback"] = True
-    elif meta_path.exists():
-        try:
-            existing = json.loads(meta_path.read_text(encoding="utf-8"))
-            if existing.get("has_fallback"):
-                payload["has_fallback"] = True
-        except Exception:
-            pass
     meta_path.write_text(
         json.dumps(payload, ensure_ascii=False, indent=2),
         encoding="utf-8",

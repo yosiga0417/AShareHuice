@@ -101,34 +101,6 @@ def prepare_nav_data(close_df: pd.DataFrame) -> Tuple[np.ndarray, Dict[str, int]
     return returns_array, symbol_index, reverse_index, trading_dates
 
 
-def compute_nav_series(
-    close_df: pd.DataFrame,
-    plans: List[CleanPlan],
-    rebalance_dates: List[pd.Timestamp],
-    commission_rate: float = 0.0,
-    stamp_duty_rate: float = 0.0,
-    slippage_rate: float = 0.0,
-    daily_rf_rate: float = 0.0,
-    track_top_n: int = 0,
-) -> Tuple[pd.Series, List[str], List[Dict[str, object]], Optional[List[Dict[str, object]]]]:
-    """Compute NAV series with optional transaction costs and cash support.
-
-    Returns:
-        nav_series, applied_rebalances, cost_log, holdings_evolution
-        holdings_evolution is None if track_top_n <= 0.
-    """
-    returns_array, symbol_index, reverse_index, trading_dates = prepare_nav_data(close_df)
-    return compute_nav_series_from_prepared(
-        returns_array, symbol_index, reverse_index, trading_dates,
-        plans, rebalance_dates,
-        commission_rate=commission_rate,
-        stamp_duty_rate=stamp_duty_rate,
-        slippage_rate=slippage_rate,
-        daily_rf_rate=daily_rf_rate,
-        track_top_n=track_top_n,
-    )
-
-
 def compute_nav_series_from_prepared(
     returns_array: np.ndarray,
     symbol_index: Dict[str, int],
@@ -144,7 +116,8 @@ def compute_nav_series_from_prepared(
 ) -> Tuple[pd.Series, List[str], List[Dict[str, object]], Optional[List[Dict[str, object]]]]:
     """Compute NAV series using already-prepared data arrays.
 
-    See compute_nav_series() for parameter documentation.
+    Parameters are passed through directly from the caller; see the enclosing
+    function for parameter documentation.
     """
     date_count = len(trading_dates)
     symbol_count = len(symbol_index)

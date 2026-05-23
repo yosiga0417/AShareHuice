@@ -27,21 +27,10 @@ from backend.cache import (
     save_cached_stock_series,
     slice_price_series,
 )
-from backend.models import StageProgressCallback
-
+from backend.config import read_positive_int_env
 DEFAULT_FETCH_WORKERS = min(12, max(4, (os.cpu_count() or 4) * 2))
 
-
-def read_positive_int_env(name: str, default: int) -> int:
-    raw = os.getenv(name)
-    if raw is None:
-        return default
-    try:
-        return max(1, int(raw))
-    except ValueError:
-        return default
-
-
+from backend.models import DEFAULT_BENCHMARK_CODES, StageProgressCallback
 FETCH_WORKER_LIMIT = read_positive_int_env("BACKTEST_FETCH_WORKERS", DEFAULT_FETCH_WORKERS)
 
 
@@ -172,7 +161,7 @@ def fetch_symbol_close_series(
             for gap_start, gap_end in missing_ranges:
                 fetch_start, fetch_end = expand_fetch_range(gap_start, gap_end, cached_ranges)
                 gap_series, source = fetch_symbol_close_series_remote(symbol, fetch_start, fetch_end)
-                cached_series = merge_price_series(cached_series, gap_series)
+                cached_series = merge_price_series(cached_series, gap_series, skip_normalize=True)
                 cached_ranges = normalize_cached_ranges(cached_ranges + [(gap_start, gap_end)])
                 fetched_sources.append(source)
                 if source == "stock_zh_a_hist_tx":
@@ -183,7 +172,7 @@ def fetch_symbol_close_series(
         if includes_today:
             try:
                 today_series, source = fetch_symbol_close_series_remote(symbol, today, today)
-                cached_series = merge_price_series(cached_series, today_series)
+                cached_series = merge_price_series(cached_series, today_series, skip_normalize=True)
                 fetched_sources.append(source)
                 if source == "stock_zh_a_hist_tx":
                     has_new_fallback = True
@@ -313,7 +302,7 @@ def fetch_benchmark_nav(
         for gap_start, gap_end in missing_ranges:
             fetch_start, fetch_end = expand_fetch_range(gap_start, gap_end, cached_ranges)
             gap_series = fetch_benchmark_close_series_remote(code, fetch_start, fetch_end)
-            cached_series = merge_price_series(cached_series, gap_series)
+            cached_series = merge_price_series(cached_series, gap_series, skip_normalize=True)
             cached_ranges = normalize_cached_ranges(cached_ranges + [(gap_start, gap_end)])
             cache_dirty = True
             ranges_dirty = True
@@ -374,7 +363,6 @@ def fetch_benchmark_navs(
 
 
 def build_benchmark_fetch_codes(requested_codes: Iterable[str]) -> List[str]:
-    from backend.models import DEFAULT_BENCHMARK_CODES
     ordered_codes: List[str] = []
     seen: set[str] = set()
     for raw_code in [*DEFAULT_BENCHMARK_CODES, *requested_codes]:
