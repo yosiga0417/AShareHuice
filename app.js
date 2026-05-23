@@ -2,6 +2,16 @@
      State
   ──────────────────────────────────────────────── */
   // app.js v2 — holdings chart + auto-normalize (2026-05-15)
+  const UI = {
+    primary: '#0057b8', positive: '#0f766e', danger: '#b91c1c', warning: '#c2410c',
+    subtle: '#64748b', subtleLight: '#94a3b8',
+    text: '#1e293b', textDark: '#0f172a', textMuted: '#334155',
+    surface: '#ffffff', surfaceSubtle: '#f8fafc',
+    border: '#dbe4ef', borderLight: '#e2e8f0',
+    tooltipBg: '#0f172a', tooltipText: '#f8fafc',
+    trackBg: '#dbe7f5',
+  };
+
   const STORAGE_KEY = "a_stock_backtest_v1";
   const COMPARISON_STORAGE_KEY = "a_stock_backtest_comparisons_v1";
   const LAST_RESULT_KEY = "a_stock_backtest_last_result_v1";
@@ -55,6 +65,8 @@
     semiannual: "按半年",
     custom: "自定义"
   };
+
+  const MONTH_LABELS = ["1月", "2月", "3月", "4月", "5月", "6月", "7月", "8月", "9月", "10月", "11月", "12月"];
 
   /* ────────────────────────────────────────────────
      Helpers
@@ -256,17 +268,17 @@
     const bar = document.getElementById("comparisonBar");
     const container = document.getElementById("comparisonCheckboxes");
     if (!state.savedComparisons.length) {
-      bar.style.display = "none";
+      bar.classList.add("is-hidden");
       return;
     }
-    bar.style.display = "flex";
+    bar.classList.remove("is-hidden");
     const COMP_COLORS = ["#ef4444", "#8b5cf6", "#06b6d4", "#f59e0b", "#10b981", "#ec4899", "#6366f1", "#14b8a6"];
     container.innerHTML = state.savedComparisons.map((comp, idx) => {
       const color = COMP_COLORS[idx % COMP_COLORS.length];
-      return `<label class="bm-label" style="margin-right:6px;">
+      return `<label class="bm-label comparison-item">
         <input type="checkbox" class="comp-check" value="${comp.id}" checked />
         <span class="bm-swatch" style="background:${color};"></span>${comp.label}
-        <button class="danger" style="font-size:9px;padding:1px 5px;margin-left:3px;" onclick="event.stopPropagation();removeComparison(${comp.id})">\u00d7</button>
+        <button class="danger xs auto-norm-offset" onclick="event.stopPropagation();removeComparison(${comp.id})">\u00d7</button>
       </label>`;
     }).join("");
   }
@@ -274,16 +286,31 @@
   /* ────────────────────────────────────────────────
      Periodic returns rendering
   ──────────────────────────────────────────────── */
-  let monthlyHeatmapChart = null;
   let holdingsChart = null;
+
+  function formatReturnPct(value, digits = 1) {
+    const pct = Number(value) * 100;
+    if (!Number.isFinite(pct)) return "-";
+    const sign = pct > 0 ? "+" : "";
+    return `${sign}${pct.toFixed(digits)}%`;
+  }
+
+  function getReturnTone(value, maxAbs) {
+    const num = Number(value);
+    if (!Number.isFinite(num) || Math.abs(num) < 0.00005) return "flat";
+    const intensity = Math.abs(num) / Math.max(maxAbs, 0.001);
+    if (intensity >= 0.72) return num > 0 ? "positive-strong" : "negative-strong";
+    if (intensity >= 0.34) return num > 0 ? "positive" : "negative";
+    return num > 0 ? "positive-soft" : "negative-soft";
+  }
 
   function renderPeriodicReturns(periodicData) {
     const container = document.getElementById("periodicReturns");
     if (!periodicData?.annual?.length && !periodicData?.monthly?.length) {
-      container.style.display = "none";
+      container.classList.add("is-hidden");
       return;
     }
-    container.style.display = "block";
+    container.classList.remove("is-hidden");
     const annualSorted = [...(periodicData.annual || [])].sort((a, b) => b.year - a.year);
     const tableHtml = `
       <div class="panel returns-card">
@@ -309,96 +336,53 @@
 
     const monthlyData = periodicData.monthly || [];
     if (monthlyData.length) {
-      const years = [...new Set(monthlyData.map(d => d.year))].sort();
-      const months = [1,2,3,4,5,6,7,8,9,10,11,12];
-      const yearIndex = new Map(years.map((year, index) => [year, index]));
-      const heatData = monthlyData.map(d => [d.month - 1, yearIndex.get(d.year), d.return]);
+      const years = [...new Set(monthlyData.map(d => d.year))].sort((a, b) => b - a);
+      const returnMap = new Map(monthlyData.map(d => [`${d.year}-${d.month}`, d.return]));
       const maxAbs = Math.max(0.001, ...monthlyData.map(d => Math.abs(d.return)));
       const dom = document.getElementById("monthlyHeatmap");
-      const heatmapHeight = Math.min(720, Math.max(420, 150 + years.length * 34));
-      dom.style.height = `${heatmapHeight}px`;
-      const chartWidth = dom.getBoundingClientRect().width || 720;
-      const showLabel = years.length <= 8 && chartWidth >= 620;
-      const legendHeight = Math.min(230, Math.max(150, heatmapHeight - 190));
-      if (!monthlyHeatmapChart) monthlyHeatmapChart = echarts.init(dom);
-      monthlyHeatmapChart.setOption({
-        title: {
-          text: "月度收益",
-          subtext: showLabel ? "每格显示当月收益率" : "悬停查看当月收益率",
-          left: 18,
-          top: 14,
-          textStyle: { fontSize: 14, fontWeight: 700, color: "#1e293b" },
-          subtextStyle: { fontSize: 11, color: "#64748b", lineHeight: 16 }
-        },
-        tooltip: {
-          confine: true,
-          backgroundColor: "#fff",
-          borderColor: "#e2e8f0",
-          borderWidth: 1,
-          padding: [10, 14],
-          textStyle: { color: "#1e293b", fontSize: 13 },
-          extraCssText: "box-shadow:0 8px 24px rgba(15,23,42,.12);border-radius:8px;",
-          formatter: p => {
-            if (!p.data) return "";
-            const pct = p.data[2] * 100;
-            const val = pct.toFixed(2);
-            const sign = pct > 0 ? "+" : "";
-            const color = pct > 0 ? "#16a34a" : pct < 0 ? "#dc2626" : "#64748b";
-            return `<span style="font-size:12px;color:#64748b">${years[p.data[1]]}年${p.data[0] + 1}月</span><br/><span style="font-size:18px;font-weight:700;color:${color}">${sign}${val}%</span>`;
-          }
-        },
-        grid: { top: 86, left: 58, right: 96, bottom: 30, containLabel: true },
-        xAxis: {
-          type: "category", data: months.map(m => `${m}月`),
-          position: "top",
-          axisLabel: { fontSize: 11, color: "#64748b", margin: 10 },
-          axisLine: { show: false },
-          axisTick: { show: false },
-          splitArea: { show: false }
-        },
-        yAxis: {
-          type: "category", data: years,
-          axisLabel: { fontSize: 11, color: "#64748b", fontWeight: 600, margin: 12 },
-          axisLine: { show: false },
-          axisTick: { show: false },
-          splitArea: { show: false }
-        },
-        visualMap: {
-          min: -maxAbs, max: maxAbs, calculable: false,
-          orient: "vertical", right: 22, top: 108, itemWidth: 10, itemHeight: legendHeight,
-          text: ["高收益", "低收益"], textGap: 10, textStyle: { color: "#64748b", fontSize: 10, fontWeight: 600 },
-          formatter: v => (v * 100).toFixed(1) + "%",
-          inRange: { color: ["#b91c1c", "#ef8a8a", "#fee2e2", "#f8fafc", "#d9f99d", "#65c98a", "#0f766e"] }
-        },
-        series: [{
-          type: "heatmap", data: heatData,
-          animationDuration: 350,
-          label: {
-            show: showLabel,
-            fontSize: years.length <= 5 ? 11 : 10,
-            fontWeight: 700,
-            formatter: p => {
-              const pct = p.data[2] * 100;
-              const sign = pct > 0 ? "+" : "";
-              return `${sign}${pct.toFixed(1)}%`;
-            },
-            color: "#1e293b",
-            overflow: "truncate"
-          },
-          emphasis: {
-            itemStyle: {
-              shadowBlur: 14,
-              shadowColor: "rgba(15,23,42,0.18)",
-              borderColor: "#0f172a",
-              borderWidth: 1
-            }
-          },
-          itemStyle: { borderColor: "#fff", borderWidth: 3, borderRadius: 4 }
-        }]
-      }, true);
-      requestAnimationFrame(() => monthlyHeatmapChart.resize());
-    } else if (monthlyHeatmapChart) {
-      monthlyHeatmapChart.clear();
+      const rows = years.map(year => {
+        const cells = MONTH_LABELS.map((monthLabel, monthIndex) => {
+          const month = monthIndex + 1;
+          const value = returnMap.get(`${year}-${month}`);
+          if (value == null) return `<td class="monthly-cell empty" title="${year}年${month}月无数据">-</td>`;
+          const tone = getReturnTone(value, maxAbs);
+          const fullValue = formatReturnPct(value, 2);
+          return `<td class="monthly-cell ${tone}" title="${year}年${month}月 ${fullValue}">${formatReturnPct(value, 1)}</td>`;
+        }).join("");
+        const yearValues = monthlyData.filter(item => item.year === year).map(item => item.return);
+        const yearTotal = yearValues.reduce((acc, value) => acc * (1 + value), 1) - 1;
+        const totalClass = yearTotal > 0 ? "positive" : yearTotal < 0 ? "negative" : "";
+        return `<tr><th scope="row">${year}</th>${cells}<td class="monthly-total ${totalClass}">${formatReturnPct(yearTotal, 1)}</td></tr>`;
+      }).join("");
+
+      dom.innerHTML = `
+        <div class="panel returns-card monthly-returns-card">
+          <div class="returns-card-head">
+            <div>
+              <div class="returns-card-title">月度收益</div>
+              <div class="returns-card-subtitle">每格显示当月收益率</div>
+            </div>
+            <div class="monthly-legend" aria-label="收益颜色说明">
+              <span><i class="legend-swatch negative"></i>亏损</span>
+              <span><i class="legend-swatch flat"></i>持平</span>
+              <span><i class="legend-swatch positive"></i>盈利</span>
+            </div>
+          </div>
+          <div class="monthly-table-wrap">
+            <table class="monthly-table">
+              <thead>
+                <tr>
+                  <th scope="col">年份</th>
+                  ${MONTH_LABELS.map(label => `<th scope="col">${label}</th>`).join("")}
+                  <th scope="col">合计</th>
+                </tr>
+              </thead>
+              <tbody>${rows}</tbody>
+            </table>
+          </div>
+        </div>`;
+    } else {
+      document.getElementById("monthlyHeatmap").innerHTML = "";
     }
   }
   /* ────────────────────────────────────────────────
@@ -438,10 +422,10 @@
       };
       localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
       indicator.textContent = "已自动保存";
-      indicator.style.color = "";
+      indicator.classList.remove("error");
     } catch (e) {
       indicator.textContent = "保存失败";
-      indicator.style.color = "#ef4444";
+      indicator.classList.add("error");
     }
   }
 
@@ -584,8 +568,8 @@
     const tbody = document.getElementById("previewTableBody");
     const wrap = document.getElementById("previewWrap");
     const rows = state.previewComponents.slice(0, 100);
-    if (!rows.length) { wrap.style.display = "none"; return; }
-    wrap.style.display = "block";
+    if (!rows.length) { wrap.classList.add("is-hidden"); return; }
+    wrap.classList.remove("is-hidden");
     tbody.innerHTML = rows.map(row => `
       <tr>
         <td>${row.code}</td>
@@ -617,22 +601,21 @@
           <td>
             <input type="text" value="${row.code}"
               data-action="edit-cell" data-plan-id="${plan.id}" data-row-id="${row.id}" data-field="code"
-              placeholder="000001" style="width:78px;" />
+              placeholder="000001" class="plan-edit-code" />
           </td>
           <td>
             <input type="text" value="${row.name || ""}"
               data-action="edit-cell" data-plan-id="${plan.id}" data-row-id="${row.id}" data-field="name"
-              placeholder="可选" style="width:100%;" />
+              placeholder="可选" class="plan-edit-name" />
           </td>
           <td>
             <input type="number" step="0.0001" value="${Number(row.weight) || 0}"
               data-action="edit-cell" data-plan-id="${plan.id}" data-row-id="${row.id}" data-field="weight"
-              style="width:88px;" />
+              class="plan-edit-weight" />
           </td>
           <td>
-            <button class="danger"
-              data-action="remove-row" data-plan-id="${plan.id}" data-row-id="${row.id}"
-              style="padding:3px 7px; font-size:11px;">×</button>
+            <button class="danger sm"
+              data-action="remove-row" data-plan-id="${plan.id}" data-row-id="${row.id}">×</button>
           </td>
         </tr>
       `).join("");
@@ -646,7 +629,7 @@
             <span class="chevron ${isOpen ? "open" : ""}">▾</span>
           </div>
           <div class="plan-card-body ${isOpen ? "open" : ""}">
-            <div class="row" style="margin-bottom:8px;">
+            <div class="row" style="margin-bottom:var(--space-3);">
               <label>生效日</label>
               <input type="date" value="${plan.effectiveDate}"
                 data-action="edit-plan-date" data-plan-id="${plan.id}" />
@@ -655,21 +638,21 @@
               <button class="light" data-action="add-row" data-plan-id="${plan.id}">＋ 成分股</button>
               <button class="light" data-action="fill-remaining" data-plan-id="${plan.id}">分配剩余</button>
               <button class="secondary" data-action="equal-weight" data-plan-id="${plan.id}">均等权重</button>
-              <label class="auto-norm-label" style="margin-left:4px;">
+              <label class="auto-norm-label">
                 <input type="checkbox" data-action="toggle-auto-normalize" data-plan-id="${plan.id}"
                   ${plan.autoNormalize ? "checked" : ""} /> 自动归一化
               </label>
               <button class="danger" data-action="remove-plan" data-plan-id="${plan.id}"
                 ${state.plans.length <= 1 ? "disabled" : ""}>删除计划</button>
             </div>
-            <div class="table-wrap" style="max-height:200px;">
+            <div class="table-wrap">
               <table>
                 <thead>
                   <tr>
-                    <th style="width:82px;">代码</th>
+                    <th class="col-code">代码</th>
                     <th>名称</th>
-                    <th style="width:93px;">权重(%)</th>
-                    <th style="width:44px;"></th>
+                    <th class="col-weight">权重(%)</th>
+                    <th class="col-action"></th>
                   </tr>
                 </thead>
                 <tbody>
@@ -697,8 +680,7 @@
 
     if (!task) {
       state.backtestProgress = null;
-      panel.style.display = "none";
-      panel.dataset.status = "queued";
+      panel.classList.add("is-hidden");
       stageEl.textContent = "等待执行";
       percentEl.textContent = "0%";
       fillEl.style.width = "0%";
@@ -714,7 +696,7 @@
     const detailSuffix = totalSteps > 0 ? ` · ${currentStep}/${totalSteps}` : "";
     const elapsedLabel = status === "running" ? "当前耗时" : "累计耗时";
 
-    panel.style.display = "block";
+    panel.classList.remove("is-hidden");
     panel.dataset.status = status;
     state.backtestProgress = { ...task, status, progress_pct: pct };
     stageEl.textContent = task.stage_label || "执行中";
@@ -768,11 +750,11 @@
   function setWarnings(messages) {
     const box = document.getElementById("warningBox");
     if (!messages?.length) {
-      box.style.display = "none";
+      box.classList.add("is-hidden");
       box.textContent = "";
       return;
     }
-    box.style.display = "block";
+    box.classList.remove("is-hidden");
     box.textContent = messages.join("\n");
   }
 
@@ -782,10 +764,10 @@
     const count = document.getElementById("fallbackLogCount");
     const toggle = document.getElementById("fallbackLogToggle");
     if (!logs?.length) {
-      section.style.display = "none";
+      section.classList.add("is-hidden");
       return;
     }
-    section.style.display = "block";
+    section.classList.remove("is-hidden");
     body.textContent = logs.join("\n");
     count.textContent = `(${logs.length} 条)`;
     // Collapsed by default
@@ -932,8 +914,8 @@
         trigger: "axis",
         axisPointer: { type: "cross", link: [{ xAxisIndex: "all" }] },
         backgroundColor: "rgba(15,23,42,0.88)",
-        borderColor: "#334155",
-        textStyle: { color: "#f1f5f9", fontSize: 12 },
+        borderColor: UI.textMuted,
+        textStyle: { color: UI.surfaceSubtle, fontSize: 12 },
         formatter(params) {
           if (!params.length) return "";
           const date = params[0].axisValue;
@@ -946,15 +928,15 @@
             if (holdings?.length) {
               const top = holdings.slice(0, 6);
               top.forEach(h => {
-                html += `<div style="font-size:11px;color:#cbd5e1;">${h.code}` +
+                html += `<div style="font-size:11px;color:${UI.borderLight};">${h.code}` +
                   `${h.name ? " " + h.name : ""} ` +
-                  `<b style="color:#f1f5f9">${Number(h.weight).toFixed(2)}%</b></div>`;
+                  `<b style="color:${UI.surfaceSubtle}">${Number(h.weight).toFixed(2)}%</b></div>`;
               });
               if (holdings.length > 6) {
-                html += `<div style="font-size:10px;color:#64748b;">…另有 ${holdings.length - 6} 只</div>`;
+                html += `<div style="font-size:10px;color:${UI.subtle};">…另有 ${holdings.length - 6} 只</div>`;
               }
             }
-            html += `<div style="border-top:1px solid #334155;margin:5px 0 3px;"></div>`;
+            html += `<div style="border-top:1px solid ${UI.textMuted};margin:5px 0 3px;"></div>`;
           }
 
           // ── Series values ──
@@ -963,14 +945,14 @@
             if (p.seriesName === "指数净值" && p.data != null) {
               const v = p.data;
               const ret = ((v - 1) * 100).toFixed(2);
-              const col = v >= 1 ? "#34d399" : "#f87171";
+              const col = v >= 1 ? UI.positive : UI.danger;
               html += `净值 <b>${v.toFixed(4)}</b>&nbsp; 累计 <span style="color:${col}">${ret}%</span><br/>`;
             } else if (p.seriesName === "回撤" && p.data != null) {
-              html += `回撤 <span style="color:#f87171">${(p.data * 100).toFixed(2)}%</span>`;
+              html += `回撤 <span style="color:${UI.danger}">${(p.data * 100).toFixed(2)}%</span>`;
             } else if (p.data != null) {
               const v = Number(p.data);
               const ret = ((v - 1) * 100).toFixed(2);
-              const col = v >= 1 ? "#34d399" : "#f87171";
+              const col = v >= 1 ? UI.positive : UI.danger;
               html += `<span style="color:${p.color}">─</span> ${p.seriesName} ` +
                 `<b>${v.toFixed(4)}</b> <span style="color:${col}">${ret}%</span><br/>`;
             }
@@ -987,28 +969,28 @@
         {
           type: "category", data: dates, gridIndex: 0,
           axisLabel: { show: false },
-          axisLine: { lineStyle: { color: "#e2e8f0" } },
+          axisLine: { lineStyle: { color: UI.borderLight } },
           axisTick: { show: false }
         },
         {
           type: "category", data: dates, gridIndex: 1,
-          axisLabel: { color: "#64748b", fontSize: 11 },
-          axisLine: { lineStyle: { color: "#e2e8f0" } }
+          axisLabel: { color: UI.subtle, fontSize: 11 },
+          axisLine: { lineStyle: { color: UI.borderLight } }
         }
       ],
       yAxis: [
         {
           type: "value", scale: true, gridIndex: 0,
-          axisLabel: { color: "#475569" },
-          splitLine: { lineStyle: { color: "#e2e8f0" } }
+          axisLabel: { color: UI.textMuted },
+          splitLine: { lineStyle: { color: UI.borderLight } }
         },
         {
           type: "value", gridIndex: 1, min: "dataMin",
           axisLabel: {
-            color: "#94a3b8", fontSize: 10,
+            color: UI.subtleLight, fontSize: 10,
             formatter: v => v === 0 ? "0" : (v * 100).toFixed(0) + "%"
           },
-          splitLine: { lineStyle: { color: "#f1f5f9" } }
+          splitLine: { lineStyle: { color: UI.surfaceSubtle } }
         }
       ],
       series: [
@@ -1019,7 +1001,7 @@
           type: "line",
           xAxisIndex: 0, yAxisIndex: 0,
           smooth: true, showSymbol: false,
-          lineStyle: { width: 2.2, color: "#0057b8" },
+          lineStyle: { width: 2.2, color: UI.primary },
           areaStyle: {
             color: {
               type: "linear", x: 0, y: 0, x2: 0, y2: 1,
@@ -1031,7 +1013,7 @@
           },
           markLine: markLineData.length ? {
             silent: true, symbol: "none",
-            lineStyle: { color: "#94a3b8", type: "dashed", width: 1, opacity: 0.45 },
+            lineStyle: { color: UI.subtleLight, type: "dashed", width: 1, opacity: 0.45 },
             label: { show: false },
             data: markLineData
           } : undefined
@@ -1068,7 +1050,7 @@
             scale: true,
             itemStyle: {
               color: "#facc15",
-              borderColor: "#ffffff",
+              borderColor: UI.surface,
               borderWidth: 2
             }
           },
@@ -1081,7 +1063,7 @@
           type: "line",
           xAxisIndex: 1, yAxisIndex: 1,
           smooth: false, showSymbol: false,
-          lineStyle: { width: 1.5, color: "#b91c1c" },
+          lineStyle: { width: 1.5, color: UI.danger },
           areaStyle: {
             color: {
               type: "linear", x: 0, y: 0, x2: 0, y2: 1,
@@ -1101,7 +1083,7 @@
     });
   }
 
-  // ── Holdings evolution stacked area chart ──
+  // ── Holdings evolution trend chart ──
   function renderHoldingsChart(holdingsEvolution = [], rebalanceDates = []) {
     const container = document.getElementById("holdingsChart");
     if (!holdingsEvolution?.length) {
@@ -1110,21 +1092,22 @@
         holdingsChart = null;
       }
       container.innerHTML = "";
-      container.style.display = "none";
+      container.classList.add("is-hidden");
       return;
     }
 
-    container.style.display = "block";
+    container.classList.remove("is-hidden");
 
-    // Collect all dates from first series (needed for height calc)
     const dates = (holdingsEvolution[0]?.data || []).map(d => d.date);
     if (!dates.length) {
-      container.style.display = "none";
+      container.classList.add("is-hidden");
       return;
     }
 
-    // Set height BEFORE echarts.init so it has proper dimensions
-    const chartHeight = Math.min(540, Math.max(400, 340 + dates.length * 0.035));
+    const chartWidth = container.getBoundingClientRect().width || 820;
+    const lineLimit = chartWidth >= 1100 ? 10 : chartWidth >= 820 ? 8 : 6;
+    const showEndLabels = chartWidth >= 760;
+    const chartHeight = chartWidth >= 820 ? 540 : 500;
     container.style.height = `${chartHeight}px`;
 
     try {
@@ -1136,7 +1119,7 @@
       }
     } catch (e) {
       console.error("holdingsChart init failed:", e);
-      container.style.display = "none";
+      container.classList.add("is-hidden");
       return;
     }
 
@@ -1146,17 +1129,51 @@
       "#14b8a6", "#a16207", "#be123c", "#0284c7", "#9333ea"
     ];
 
+    const escapeHtml = value => String(value ?? "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+
     const formatWeight = value => {
       const pct = Number(value) * 100;
       if (!Number.isFinite(pct)) return "-";
       return pct < 0.01 && pct > 0 ? "小于0.01%" : `${pct.toFixed(2)}%`;
     };
 
-    const seriesMeta = [];
-    const series = holdingsEvolution.map((item, idx) => {
+    const formatPointChange = value => {
+      const pct = Number(value) * 100;
+      if (!Number.isFinite(pct) || Math.abs(pct) < 0.005) return "0.00pct";
+      return `${pct > 0 ? "+" : ""}${pct.toFixed(2)}pct`;
+    };
+
+    const shortName = value => {
+      const text = String(value || "");
+      return text.length > 8 ? `${text.slice(0, 7)}...` : text;
+    };
+
+    const makeGradient = (color, topOpacity, bottomOpacity = 0.01) => ({
+      type: "linear", x: 0, y: 0, x2: 0, y2: 1,
+      colorStops: [
+        { offset: 0, color: colorWithAlpha(color, topOpacity) },
+        { offset: 1, color: colorWithAlpha(color, bottomOpacity) }
+      ]
+    });
+
+    const colorWithAlpha = (hex, alpha) => {
+      const value = String(hex || "").replace("#", "");
+      if (value.length !== 6) return hex;
+      const r = parseInt(value.slice(0, 2), 16);
+      const g = parseInt(value.slice(2, 4), 16);
+      const b = parseInt(value.slice(4, 6), 16);
+      return `rgba(${r},${g},${b},${alpha})`;
+    };
+
+    const buildItem = (item, idx) => {
       const isOther = item.code === "其他";
       const isCash = item.code === "现金";
-      const color = isOther ? "#94a3b8" : isCash ? "#cbd5e1" :
+      const color = isOther ? UI.subtleLight : isCash ? UI.borderLight :
         HOLDINGS_COLORS[idx % HOLDINGS_COLORS.length];
       const displayName = item.name && item.name !== item.code
         ? `${item.name}(${item.code})`
@@ -1165,64 +1182,172 @@
       (item.data || []).forEach(d => { dataMap[d.date] = Number(d.weight); });
       const values = dates.map(d => {
         const v = dataMap[d];
-        return v != null ? Number(v) : null;
+        return Number.isFinite(v) ? Number(v) : 0;
       });
       const latestValue = Number(values[values.length - 1]) || 0;
-      seriesMeta.push({ name: displayName, code: item.code, color, value: latestValue });
-
-      const baseStyle = {
+      const maxValue = Math.max(...values);
+      const avgValue = values.reduce((sum, value) => sum + value, 0) / values.length;
+      return {
+        code: item.code,
         name: displayName,
-        data: values,
-        type: "line",
-        stack: "holdings",
-        connectNulls: true,
-        areaStyle: {
-          color,
-          opacity: isOther ? 0.24 : isCash ? 0.20 : 0.74
-        },
-        smooth: false,
-        showSymbol: false,
-        symbol: "circle",
-        symbolSize: 5,
-        emphasis: {
-          focus: "series",
-          lineStyle: { width: isOther || isCash ? 1.4 : 2.2 },
-          areaStyle: { opacity: isOther || isCash ? 0.34 : 0.88 }
-        },
-        lineStyle: {
-          width: isOther || isCash ? 0.9 : 1.25,
-          color,
-          opacity: isOther || isCash ? 0.75 : 0.95
-        },
-        itemStyle: { color }
+        rawName: item.name || item.code,
+        color,
+        values,
+        latest: latestValue,
+        max: maxValue,
+        avg: avgValue,
+        score: maxValue * 0.55 + avgValue * 0.30 + latestValue * 0.15,
+        isOther,
+        isCash
       };
+    };
 
-      if (isOther) {
-        baseStyle.lineStyle.type = "dotted";
-      } else if (isCash) {
-        baseStyle.lineStyle.type = "dotted";
-      }
+    const items = holdingsEvolution.map(buildItem);
+    const stockItems = items
+      .filter(item => !item.isOther && !item.isCash)
+      .sort((a, b) => b.score - a.score);
+    const topLineItems = stockItems.slice(0, lineLimit);
+    const restTrackedItems = stockItems.slice(lineLimit);
+    const otherItem = items.find(item => item.isOther);
+    const cashItem = items.find(item => item.isCash);
 
-      return baseStyle;
-    });
+    const sumValues = sourceItems => dates.map((_, dateIdx) =>
+      sourceItems.reduce((sum, item) => sum + (Number(item.values[dateIdx]) || 0), 0)
+    );
+    const addValues = (...seriesValues) => dates.map((_, dateIdx) =>
+      seriesValues.reduce((sum, values) => sum + (Number(values?.[dateIdx]) || 0), 0)
+    );
 
-    // Rebalance markers for xAxis
+    const mainValues = sumValues(topLineItems);
+    const restTrackedValues = sumValues(restTrackedItems);
+    const otherValues = otherItem?.values || dates.map(() => 0);
+    const restValues = addValues(restTrackedValues, otherValues);
+    const cashValues = cashItem?.values || dates.map(() => 0);
+    const hasCash = cashValues.some(value => value > 0.0001);
+    const latestIdx = dates.length - 1;
+    const latestDate = dates[latestIdx];
+    const mainLatest = mainValues[latestIdx] || 0;
+    const restLatest = restValues[latestIdx] || 0;
+    const cashLatest = cashValues[latestIdx] || 0;
+    const topHolding = [...stockItems].sort((a, b) => b.latest - a.latest)[0];
+    const maxLineWeight = Math.max(0, ...topLineItems.flatMap(item => item.values));
+    const pickYAxisMax = value => {
+      const padded = Math.max(value * 1.22, 0.025);
+      return [0.03, 0.05, 0.08, 0.10, 0.15, 0.20, 0.30, 0.50, 1.0]
+        .find(limit => limit >= padded) || 1.0;
+    };
+    const mainYAxisMax = pickYAxisMax(maxLineWeight);
+    const endLabelRight = showEndLabels ? 104 : 26;
+
     const rebalanceDateSet = new Set(rebalanceDates);
     const dateSet = new Set(dates);
     const markLineData = rebalanceDates
       .filter(d => dateSet.has(d))
       .map(d => ({ xAxis: d }));
-    const latestDate = dates[dates.length - 1];
-    const activeHoldings = seriesMeta
-      .filter(item => item.value > 0.000001)
-      .sort((a, b) => b.value - a.value);
-    const topHolding = activeHoldings[0];
     const subtitleParts = [
       `${dates[0]} 至 ${latestDate}`,
-      `当前 ${activeHoldings.length} 个有效仓位`
+      `展示 ${topLineItems.length} 条主持仓轨迹`,
+      `主持仓合计 ${formatWeight(mainLatest)}`
     ];
-    if (topHolding) subtitleParts.push(`最大 ${topHolding.name} ${formatWeight(topHolding.value)}`);
+    if (topHolding) subtitleParts.push(`最大 ${topHolding.name} ${formatWeight(topHolding.latest)}`);
     if (rebalanceDates?.length) subtitleParts.push(`${rebalanceDates.length} 次调仓`);
+
+    const topSeries = topLineItems.map((item, idx) => ({
+      name: item.name,
+      data: item.values,
+      type: "line",
+      xAxisIndex: 0,
+      yAxisIndex: 0,
+      smooth: true,
+      smoothMonotone: "x",
+      showSymbol: false,
+      symbol: "circle",
+      symbolSize: idx < 4 ? 7 : 5,
+      z: 10 + topLineItems.length - idx,
+      lineStyle: {
+        width: idx < 4 ? 2.6 : 1.9,
+        color: item.color,
+        opacity: idx < 6 ? 0.96 : 0.78
+      },
+      itemStyle: { color: item.color, borderColor: UI.surface, borderWidth: 2 },
+      areaStyle: idx < 3 ? { color: makeGradient(item.color, 0.12, 0.00) } : undefined,
+      emphasis: {
+        focus: "series",
+        scale: true,
+        lineStyle: { width: 3.4, opacity: 1 }
+      },
+      endLabel: showEndLabels ? {
+        show: true,
+        formatter: () => `${shortName(item.rawName)} ${formatWeight(item.latest)}`,
+        color: item.color,
+        fontSize: 10,
+        fontWeight: 700,
+        distance: 7
+      } : undefined,
+      labelLayout: showEndLabels ? { moveOverlap: "shiftY" } : undefined
+    }));
+
+    const overviewSeries = [
+      {
+        name: "主持仓合计",
+        data: mainValues,
+        type: "line",
+        stack: "overview",
+        xAxisIndex: 1,
+        yAxisIndex: 1,
+        smooth: true,
+        showSymbol: false,
+        lineStyle: { width: 1.2, color: UI.primary, opacity: 0.65 },
+        areaStyle: { color: colorWithAlpha(UI.primary, 0.24) },
+        itemStyle: { color: UI.primary }
+      },
+      {
+        name: "其余持仓",
+        data: restValues,
+        type: "line",
+        stack: "overview",
+        xAxisIndex: 1,
+        yAxisIndex: 1,
+        smooth: true,
+        showSymbol: false,
+        lineStyle: { width: 1, color: UI.subtleLight, opacity: 0.65 },
+        areaStyle: { color: colorWithAlpha(UI.subtleLight, 0.22) },
+        itemStyle: { color: UI.subtleLight }
+      },
+      ...(hasCash ? [{
+        name: "现金",
+        data: cashValues,
+        type: "line",
+          stack: "overview",
+          xAxisIndex: 1,
+          yAxisIndex: 1,
+          smooth: true,
+          showSymbol: false,
+          lineStyle: { width: 1, color: "#64748b", opacity: 0.65 },
+          areaStyle: { color: "rgba(100,116,139,0.18)" },
+          itemStyle: { color: "#64748b" }
+      }] : [])
+    ];
+
+    const tooltipRows = date => {
+      const dateIndex = dates.indexOf(date);
+      if (dateIndex < 0) return { holdings: [], overview: [] };
+      const holdings = topLineItems
+        .map(item => ({
+          name: item.name,
+          color: item.color,
+          value: item.values[dateIndex] || 0,
+          delta: dateIndex > 0 ? (item.values[dateIndex] || 0) - (item.values[dateIndex - 1] || 0) : 0
+        }))
+        .filter(row => row.value > 0)
+        .sort((a, b) => b.value - a.value);
+      const overview = [
+        { name: "主持仓合计", color: UI.primary, value: mainValues[dateIndex] || 0 },
+        { name: "其余持仓", color: UI.subtleLight, value: restValues[dateIndex] || 0 },
+        ...(hasCash ? [{ name: "现金", color: "#64748b", value: cashValues[dateIndex] || 0 }] : [])
+      ].filter(row => row.value > 0.000001);
+      return { holdings, overview };
+    };
 
     holdingsChart.setOption({
       backgroundColor: "transparent",
@@ -1230,104 +1355,144 @@
       animationDuration: 450,
       animationDurationUpdate: 300,
       title: {
-        text: "持仓份额变化",
+        text: "主要持仓变化",
         subtext: subtitleParts.join(" · "),
         left: 20,
         top: 14,
-        textStyle: { color: "#0f172a", fontSize: 14, fontWeight: 700 },
-        subtextStyle: { color: "#64748b", fontSize: 11, lineHeight: 16 }
+        textStyle: { color: UI.textDark, fontSize: 14, fontWeight: 700 },
+        subtextStyle: { color: UI.subtle, fontSize: 11, lineHeight: 16 }
       },
       legend: {
         type: "scroll",
         top: 54,
         left: 18,
-        right: 18,
+        right: endLabelRight,
         height: 28,
-        itemWidth: 10,
-        itemHeight: 10,
-        itemGap: 12,
+        data: topLineItems.map(item => item.name),
+        itemWidth: 16,
+        itemHeight: 4,
+        itemGap: 14,
         icon: "roundRect",
-        pageIconColor: "#2563eb",
-        pageIconInactiveColor: "#cbd5e1",
-        pageTextStyle: { color: "#64748b", fontSize: 10 },
-        textStyle: { color: "#334155", fontSize: 11 },
+        pageIconColor: UI.primary,
+        pageIconInactiveColor: UI.borderLight,
+        pageTextStyle: { color: UI.subtle, fontSize: 10 },
+        textStyle: { color: UI.textMuted, fontSize: 11 },
         formatter: name => name.length > 16 ? `${name.slice(0, 15)}...` : name
       },
+      axisPointer: { link: [{ xAxisIndex: [0, 1] }] },
       tooltip: {
         trigger: "axis",
         confine: true,
         axisPointer: {
           type: "line",
-          lineStyle: { color: "#64748b", width: 1, type: "dashed", opacity: 0.65 }
+          lineStyle: { color: UI.subtle, width: 1, type: "dashed", opacity: 0.65 }
         },
-        backgroundColor: "#ffffff",
-        borderColor: "#dbe4ef",
+        backgroundColor: UI.surface,
+        borderColor: UI.border,
         borderWidth: 1,
         padding: [10, 12],
-        textStyle: { color: "#1e293b", fontSize: 12 },
+        textStyle: { color: UI.text, fontSize: 12 },
         extraCssText: "box-shadow:0 12px 28px rgba(15,23,42,.14);border-radius:8px;",
         formatter(params) {
           if (!params.length) return "";
           const date = params[0].axisValue;
-          const sorted = [...params]
-            .filter(p => p.seriesName !== "调仓日")
-            .sort((a, b) => (Number(b.value) || 0) - (Number(a.value) || 0));
-          const visible = sorted.filter(p => Number(p.value) > 0);
-          let html = `<div style="display:flex;align-items:center;gap:8px;margin-bottom:7px;font-weight:700;color:#0f172a;">` +
-            `<span>${date}</span>` +
+          const { holdings, overview } = tooltipRows(date);
+          let html = `<div style="display:flex;align-items:center;gap:8px;margin-bottom:7px;font-weight:700;color:${UI.textDark};">` +
+            `<span>${escapeHtml(date)}</span>` +
             (rebalanceDateSet.has(date)
               ? `<span style="font-size:10px;font-weight:700;color:#92400e;background:#fef3c7;border:1px solid #fde68a;border-radius:999px;padding:1px 7px;">调仓日</span>`
               : "") +
             `</div>`;
-          for (const p of visible.slice(0, 10)) {
-            const rawValue = Number(p.value);
-            if (!Number.isFinite(rawValue)) continue;
-            html += `<div style="display:grid;grid-template-columns:10px minmax(120px,1fr) auto;gap:7px;align-items:center;margin:3px 0;">` +
-              `<span style="width:8px;height:8px;border-radius:2px;background:${p.color};display:inline-block;"></span>` +
-              `<span style="color:#475569;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${p.seriesName}</span>` +
-              `<b style="color:#0f172a;">${formatWeight(rawValue)}</b>` +
+          html += `<div style="font-size:11px;color:${UI.subtle};margin-bottom:4px;">主持仓轨迹</div>`;
+          for (const row of holdings) {
+            const deltaColor = row.delta > 0 ? UI.positive : row.delta < 0 ? UI.danger : UI.subtle;
+            html += `<div style="display:grid;grid-template-columns:10px minmax(126px,1fr) auto auto;gap:7px;align-items:center;margin:3px 0;">` +
+              `<span style="width:8px;height:8px;border-radius:3px;background:${row.color};display:inline-block;"></span>` +
+              `<span style="color:${UI.textMuted};overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(row.name)}</span>` +
+              `<b style="color:${UI.textDark};">${formatWeight(row.value)}</b>` +
+              `<span style="color:${deltaColor};font-size:11px;">${formatPointChange(row.delta)}</span>` +
               `</div>`;
           }
-          if (visible.length > 10) {
-            const rest = visible.slice(10).reduce((sum, p) => sum + (Number(p.value) || 0), 0);
-            html += `<div style="margin-top:6px;padding-top:6px;border-top:1px solid #e2e8f0;color:#64748b;">` +
-              `其余 ${visible.length - 10} 项合计 <b style="color:#334155;">${formatWeight(rest)}</b></div>`;
+          if (!holdings.length) {
+            html += `<span style="color:${UI.subtle};">当日无有效主持仓份额</span>`;
           }
-          if (!visible.length) html += `<span style="color:#64748b;">当日无有效持仓份额</span>`;
+          html += `<div style="margin-top:8px;padding-top:7px;border-top:1px solid ${UI.borderLight};font-size:11px;color:${UI.subtle};">组合概览</div>`;
+          for (const row of overview) {
+            html += `<div style="display:grid;grid-template-columns:10px minmax(126px,1fr) auto;gap:7px;align-items:center;margin:3px 0;">` +
+              `<span style="width:8px;height:8px;border-radius:3px;background:${row.color};display:inline-block;"></span>` +
+              `<span style="color:${UI.textMuted};">${escapeHtml(row.name)}</span>` +
+              `<b style="color:${UI.textDark};">${formatWeight(row.value)}</b>` +
+              `</div>`;
+          }
           return html;
         }
       },
-      grid: { top: 102, left: 52, right: 24, bottom: 66, containLabel: true },
-      xAxis: {
-        type: "category", data: dates,
-        boundaryGap: false,
-        axisLabel: {
-          color: "#64748b",
-          fontSize: 10,
-          hideOverlap: true,
-          margin: 12,
-          rotate: dates.length > 700 ? 30 : 0
+      grid: [
+        { top: 104, left: 54, right: endLabelRight, height: chartWidth >= 820 ? 278 : 238, containLabel: true },
+        { top: chartWidth >= 820 ? 420 : 386, left: 54, right: endLabelRight, height: 50, containLabel: false }
+      ],
+      xAxis: [
+        {
+          type: "category", data: dates,
+          gridIndex: 0,
+          boundaryGap: false,
+          axisLabel: { show: false },
+          axisLine: { show: false },
+          axisTick: { show: false },
+          splitLine: { show: false }
         },
-        axisLine: { show: false },
-        axisTick: { show: false },
-        splitLine: { show: false }
-      },
-      yAxis: {
-        type: "value", min: 0, max: 1,
-        splitNumber: 4,
-        axisLabel: {
-          color: "#64748b",
-          fontSize: 10,
-          formatter: v => (v * 100).toFixed(0) + "%"
+        {
+          type: "category", data: dates,
+          gridIndex: 1,
+          boundaryGap: false,
+          axisLabel: {
+            color: UI.subtle,
+            fontSize: 10,
+            hideOverlap: true,
+            margin: 10,
+            rotate: dates.length > 700 ? 30 : 0
+          },
+          axisLine: { show: false },
+          axisTick: { show: false },
+          splitLine: { show: false }
+        }
+      ],
+      yAxis: [
+        {
+          type: "value",
+          gridIndex: 0,
+          min: 0,
+          max: mainYAxisMax,
+          splitNumber: 4,
+          axisLabel: {
+            color: UI.subtle,
+            fontSize: 10,
+            formatter: v => (v * 100).toFixed(v < 0.1 ? 1 : 0) + "%"
+          },
+          axisLine: { show: false },
+          axisTick: { show: false },
+          splitLine: { lineStyle: { color: UI.trackBg, type: "dashed" } }
         },
-        axisLine: { show: false },
-        axisTick: { show: false },
-        splitLine: { lineStyle: { color: "#e8eef6", type: "dashed" } }
-      },
+        {
+          type: "value",
+          gridIndex: 1,
+          min: 0,
+          max: 1,
+          splitNumber: 2,
+          axisLabel: {
+            color: UI.subtleLight,
+            fontSize: 9,
+            formatter: v => (v * 100).toFixed(0) + "%"
+          },
+          axisLine: { show: false },
+          axisTick: { show: false },
+          splitLine: { lineStyle: { color: UI.borderLight, type: "dashed", opacity: 0.75 } }
+        }
+      ],
       dataZoom: [
         {
           type: "inside",
-          xAxisIndex: 0,
+          xAxisIndex: [0, 1],
           filterMode: "none",
           minSpan: 5,
           zoomOnMouseWheel: true,
@@ -1335,38 +1500,41 @@
         },
         {
           type: "slider",
-          xAxisIndex: 0,
+          xAxisIndex: [0, 1],
           filterMode: "none",
           height: 18,
           left: 52,
-          right: 24,
+          right: endLabelRight,
           bottom: 22,
           showDetail: false,
           brushSelect: false,
           borderColor: "transparent",
-          backgroundColor: "#f1f5f9",
+          backgroundColor: UI.surfaceSubtle,
           fillerColor: "rgba(37,99,235,0.16)",
           handleSize: "80%",
-          handleStyle: { color: "#ffffff", borderColor: "#94a3b8", borderWidth: 1 },
-          moveHandleStyle: { color: "#2563eb" },
+          handleStyle: { color: UI.surface, borderColor: UI.subtleLight, borderWidth: 1 },
+          moveHandleStyle: { color: UI.primary },
           dataBackground: {
-            lineStyle: { color: "#cbd5e1" },
-            areaStyle: { color: "#e2e8f0" }
+            lineStyle: { color: UI.borderLight },
+            areaStyle: { color: UI.borderLight }
           },
           selectedDataBackground: {
-            lineStyle: { color: "#2563eb" },
+            lineStyle: { color: UI.primary },
             areaStyle: { color: "rgba(37,99,235,0.14)" }
           }
         }
       ],
       series: [
-        ...series,
+        ...topSeries,
+        ...overviewSeries,
         ...(markLineData.length ? [{
           name: "调仓日",
-          type: "line", data: [], showSymbol: false, silent: true,
+          type: "line", data: dates.map(() => null), showSymbol: false, silent: true,
+          xAxisIndex: 0,
+          yAxisIndex: 0,
           markLine: {
             silent: true, symbol: "none",
-            lineStyle: { color: "#f59e0b", type: "dashed", width: 1, opacity: 0.55 },
+            lineStyle: { color: UI.warning, type: "dashed", width: 1, opacity: 0.42 },
             label: { show: false },
             data: markLineData
           },
@@ -1510,7 +1678,7 @@ function renderBacktestNotes(result = null) {
     const url = state.chart.getDataURL({
       type: "png",
       pixelRatio: 2,
-      backgroundColor: "#ffffff"
+      backgroundColor: UI.surface
     });
     const a = document.createElement("a");
     a.href = url;
@@ -1694,7 +1862,7 @@ function renderBacktestNotes(result = null) {
     renderBacktestNotes(data);
     document.getElementById("exportCsvBtn").disabled = false;
     document.getElementById("exportImgBtn").disabled = false;
-    document.getElementById("saveComparisonBtn").style.display = "inline-block";
+    document.getElementById("saveComparisonBtn").classList.remove("is-hidden");
     const allWarnings = data.warnings || [];
     const fallbackLogs = allWarnings.filter(w => w.includes("使用兜底数据源"));
     const otherWarnings = allWarnings.filter(w => !w.includes("使用兜底数据源"));
@@ -1936,7 +2104,7 @@ function renderBacktestNotes(result = null) {
 
     // Sync custom-dates row visibility
     if (document.getElementById("rebalanceMode").value === "custom") {
-      document.getElementById("customDatesRow").style.display = "block";
+      document.getElementById("customDatesRow").classList.remove("is-hidden");
     }
 
     state.savedComparisons = loadComparisons();
@@ -1960,7 +2128,7 @@ function renderBacktestNotes(result = null) {
       renderBacktestNotes(lastResult.result);
       document.getElementById("exportCsvBtn").disabled = false;
       document.getElementById("exportImgBtn").disabled = false;
-      document.getElementById("saveComparisonBtn").style.display = "inline-block";
+      document.getElementById("saveComparisonBtn").classList.remove("is-hidden");
       const allWarnings = lastResult.result.warnings || [];
       const fallbackLogs = allWarnings.filter(w => w.includes("使用兜底数据源"));
       const otherWarnings = allWarnings.filter(w => !w.includes("使用兜底数据源"));
@@ -1990,8 +2158,7 @@ function renderBacktestNotes(result = null) {
   document.getElementById("importPlansFile").addEventListener("change", importPlans);
 
   document.getElementById("rebalanceMode").addEventListener("change", event => {
-    document.getElementById("customDatesRow").style.display =
-      event.target.value === "custom" ? "block" : "none";
+    document.getElementById("customDatesRow").classList.toggle("is-hidden", event.target.value !== "custom");
     scheduleSave();
   });
 
@@ -2045,11 +2212,13 @@ function renderBacktestNotes(result = null) {
     clearTimeout(resizeTimer);
     resizeTimer = setTimeout(() => {
       if (state.chart) state.chart.resize();
-      if (holdingsChart) holdingsChart.resize();
+      if (state.lastResult?.holdings_evolution?.length) {
+        renderHoldingsChart(state.lastResult.holdings_evolution, state.lastResult.applied_rebalance_dates || []);
+      } else if (holdingsChart) {
+        holdingsChart.resize();
+      }
       if (state.lastResult?.periodic_returns) {
         renderPeriodicReturns(state.lastResult.periodic_returns);
-      } else if (monthlyHeatmapChart) {
-        monthlyHeatmapChart.resize();
       }
     }, 150);
   });

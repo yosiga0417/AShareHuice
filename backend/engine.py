@@ -223,9 +223,14 @@ def compute_nav_series(
     holdings_evolution: Optional[List[Dict[str, object]]] = None
     if holdings_matrix is not None and holdings_cash_values is not None:
         latest_weights = holdings_matrix[-1]
-        positive_indices = np.flatnonzero(latest_weights > 1e-10)
+        max_weights = holdings_matrix.max(axis=0)
+        mean_weights = holdings_matrix.mean(axis=0)
+        positive_indices = np.flatnonzero(max_weights > 1e-10)
         if positive_indices.size:
-            ranked_indices = positive_indices[np.argsort(latest_weights[positive_indices])[::-1]]
+            # Rank by full-period importance, not only by the final day, so holdings
+            # that were major earlier in the backtest remain visible in the chart.
+            importance = max_weights * 0.55 + mean_weights * 0.30 + latest_weights * 0.15
+            ranked_indices = positive_indices[np.argsort(importance[positive_indices])[::-1]]
             selected_indices = ranked_indices[:track_top_n].tolist()
         else:
             selected_indices = []

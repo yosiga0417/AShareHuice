@@ -27,24 +27,24 @@
         <h2>成分股导入</h2>
       </div>
       <div class="row">
-        <input id="fileInput" type="file" accept=".xls,.xlsx" style="flex:1; min-width:0; font-size:12px;" />
+        <input id="fileInput" type="file" accept=".xls,.xlsx" class="file-input" />
         <button id="parseFileBtn">解析</button>
       </div>
       <div class="row">
         <label>应用到</label>
-        <select id="targetPlanSelect" style="flex:1;"></select>
+        <select id="targetPlanSelect" class="select-grow"></select>
         <button id="applyPreviewBtn" class="secondary" disabled>应用</button>
       </div>
       <div class="hint" id="importSummary">未导入文件。解析时会强制保留6位股票代码（如 002879）。</div>
-      <div id="previewWrap" style="margin-top:8px; display:none;">
-        <div style="font-size:11px; color:var(--subtle); margin-bottom:4px;">解析预览（前100行）</div>
+      <div id="previewWrap" class="is-hidden">
+        <div class="preview-label">解析预览（前100行）</div>
         <div class="table-wrap">
           <table>
             <thead>
               <tr>
-                <th style="width:70px;">代码</th>
+                <th class="col-code">代码</th>
                 <th>名称</th>
-                <th style="width:75px;">权重(%)</th>
+                <th class="col-weight">权重(%)</th>
               </tr>
             </thead>
             <tbody id="previewTableBody"></tbody>
@@ -58,10 +58,10 @@
       <div class="section-head">
         <span class="step-badge">2</span>
         <h2>调仓计划</h2>
-        <button id="addPlanBtn" class="light" style="font-size:11px; padding:4px 10px;">＋ 新增计划</button>
-        <button id="exportPlansBtn" class="light" style="font-size:11px; padding:4px 9px;" title="导出调仓计划为 JSON">↓ 导出</button>
-        <button id="importPlansBtn" class="light" style="font-size:11px; padding:4px 9px;" title="从 JSON 导入调仓计划">↑ 导入</button>
-        <input id="importPlansFile" type="file" accept=".json" style="display:none;" />
+        <button id="addPlanBtn" class="light sm">＋ 新增计划</button>
+        <button id="exportPlansBtn" class="light sm" title="导出调仓计划为 JSON">↓ 导出</button>
+        <button id="importPlansBtn" class="light sm" title="从 JSON 导入调仓计划">↑ 导入</button>
+        <input id="importPlansFile" type="file" accept=".json" class="is-hidden" />
       </div>
       <div id="plansContainer"></div>
     </div>
@@ -96,19 +96,19 @@
           <input id="riskFreeRate" type="number" min="0" step="0.001" value="0.02" />
         </div>
       </div>
-      <div id="customDatesRow" style="display:none; margin-bottom:6px;">
-        <label style="display:block; margin-bottom:3px; font-size:11px;">再平衡日期（每行一个）</label>
+      <div id="customDatesRow" class="is-hidden">
+        <label class="label-block">再平衡日期（每行一个）</label>
         <textarea id="customDates" placeholder="2024-03-15&#10;2024-06-15"></textarea>
       </div>
       <button class="adv-toggle" id="advToggle">▸ 高级设置</button>
       <div class="adv-body" id="advBody">
-        <div class="row" style="margin-top:4px;">
+        <div class="row">
           <label>后端地址</label>
           <input id="backendUrl" type="text" value="http://127.0.0.1:8000" />
         </div>
-        <div style="margin-top:8px; padding-top:8px; border-top:1px solid var(--border);">
-          <label style="font-size:12px; font-weight:600; color:var(--text);">交易成本</label>
-          <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:6px; margin-top:4px;">
+        <div class="divider">
+          <label class="section-label">交易成本</label>
+          <div class="form-grid-3">
             <div class="param-group">
               <label>佣金(%)</label>
               <input id="commissionRate" type="number" min="0" step="0.0001" value="0.025" />
@@ -122,10 +122,10 @@
               <input id="slippageRate" type="number" min="0" step="0.0001" value="0.1" />
             </div>
           </div>
-          <div class="hint" style="margin-top:3px;">佣金双边、印花税卖方单边、滑点双边。设为 0 则忽略成本。</div>
+          <div class="hint">佣金双边、印花税卖方单边、滑点双边。设为 0 则忽略成本。</div>
         </div>
-        <div style="margin-top:8px; padding-top:8px; border-top:1px solid var(--border);">
-          <label class="bm-label" style="font-size:12px;">
+        <div class="divider">
+          <label class="bm-label section-label">
             <input type="checkbox" id="allowCash" />
             允许现金仓位（权重和不足 100% 时余额计为现金，按无风险利率计息）
           </label>
@@ -141,9 +141,9 @@
       <div class="section-head">
         <span class="step-badge done">4</span>
         <h2>回测结果</h2>
-        <button id="exportCsvBtn" class="light" style="font-size:11px;padding:4px 9px;" disabled title="导出净值数据为 CSV">↓ CSV</button>
-        <button id="exportImgBtn" class="light" style="font-size:11px;padding:4px 9px;" disabled title="保存图表为 PNG">↓ 截图</button>
-        <button id="saveComparisonBtn" class="light" style="font-size:11px;padding:4px 9px; display:none;" title="保存当前回测结果用于对比">⊕ 对比</button>
+        <button id="exportCsvBtn" class="light sm" disabled title="导出净值数据为 CSV">↓ CSV</button>
+        <button id="exportImgBtn" class="light sm" disabled title="保存图表为 PNG">↓ 截图</button>
+        <button id="saveComparisonBtn" class="light sm is-hidden" title="保存当前回测结果用于对比">⊕ 对比</button>
       </div>
       <div id="statusBar">等待执行回测。</div>
       <div class="progress-panel" id="progressPanel" data-status="queued">
@@ -162,7 +162,7 @@
       <div class="warning-box" id="warningBox"></div>
       <div class="metrics" id="metricsContainer"></div>
       <div class="benchmark-bar" id="benchmarkBar">
-        <span style="color:var(--subtle);">对比基准：</span>
+        <span class="muted">对比基准：</span>
         <label class="bm-label">
           <input type="checkbox" class="bm-check" value="000300" checked />
           <span class="bm-swatch" style="background:#f59e0b;"></span>沪深300
@@ -176,14 +176,14 @@
           <span class="bm-swatch" style="background:#8b5cf6;"></span>上证指数
         </label>
       </div>
-      <div class="benchmark-bar" id="comparisonBar" style="display:none;">
-        <span style="color:var(--subtle);">对比回测：</span>
+      <div class="benchmark-bar is-hidden" id="comparisonBar">
+        <span class="muted">对比回测：</span>
         <span id="comparisonCheckboxes"></span>
-        <button id="clearComparisonsBtn" class="danger" style="font-size:10px;padding:3px 8px;margin-left:auto;">清空对比</button>
+        <button id="clearComparisonsBtn" class="danger btn-clear-comparison">清空对比</button>
       </div>
       <div id="navChart"></div>
-      <div id="holdingsChart" style="display:none;"></div>
-      <div id="periodicReturns" class="periodic-returns" style="display:none;">
+      <div id="holdingsChart" class="is-hidden"></div>
+      <div id="periodicReturns" class="periodic-returns is-hidden">
         <div class="periodic-grid">
           <div id="annualReturnsTable" class="annual-returns"></div>
           <div id="monthlyHeatmap" class="monthly-heatmap"></div>
