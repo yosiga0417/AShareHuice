@@ -196,6 +196,13 @@
   function sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
   }
+  function debounce(fn, delay) {
+    let timer = null;
+    return (...args) => {
+      clearTimeout(timer);
+      timer = setTimeout(() => fn(...args), delay);
+    };
+  }
 
   function formatElapsed(seconds) {
     const value = Math.max(0, Number(seconds) || 0);
@@ -1099,6 +1106,7 @@
     container.classList.remove("is-hidden");
 
     const dates = (holdingsEvolution[0]?.data || []).map(d => d.date);
+    const dateIndexMap = new Map(dates.map((d, i) => [d, i]));
     if (!dates.length) {
       container.classList.add("is-hidden");
       return;
@@ -1178,12 +1186,7 @@
       const displayName = item.name && item.name !== item.code
         ? `${item.name}(${item.code})`
         : (item.name || item.code);
-      const dataMap = {};
-      (item.data || []).forEach(d => { dataMap[d.date] = Number(d.weight); });
-      const values = dates.map(d => {
-        const v = dataMap[d];
-        return Number.isFinite(v) ? Number(v) : 0;
-      });
+      const values = (item.data || []).map(d => Number(d.weight));
       const latestValue = Number(values[values.length - 1]) || 0;
       const maxValue = Math.max(...values);
       const avgValue = values.reduce((sum, value) => sum + value, 0) / values.length;
@@ -1211,12 +1214,25 @@
     const otherItem = items.find(item => item.isOther);
     const cashItem = items.find(item => item.isCash);
 
-    const sumValues = sourceItems => dates.map((_, dateIdx) =>
-      sourceItems.reduce((sum, item) => sum + (Number(item.values[dateIdx]) || 0), 0)
-    );
-    const addValues = (...seriesValues) => dates.map((_, dateIdx) =>
-      seriesValues.reduce((sum, values) => sum + (Number(values?.[dateIdx]) || 0), 0)
-    );
+    const sumValues = sourceItems => {
+      const result = new Float64Array(dates.length);
+      for (const item of sourceItems) {
+        const vals = item.values;
+        for (let i = 0; i < result.length; i++) {
+          result[i] += (vals[i] || 0);
+        }
+      }
+      return Array.from(result);
+    };
+    const addValues = (...seriesValues) => {
+      const result = new Float64Array(dates.length);
+      for (const values of seriesValues) {
+        for (let i = 0; i < result.length; i++) {
+          result[i] += (values?.[i] || 0);
+        }
+      }
+      return Array.from(result);
+    };
 
     const mainValues = sumValues(topLineItems);
     const restTrackedValues = sumValues(restTrackedItems);
@@ -1330,7 +1346,7 @@
     ];
 
     const tooltipRows = date => {
-      const dateIndex = dates.indexOf(date);
+      const dateIndex = dateIndexMap.get(date) ?? -1;
       if (dateIndex < 0) return { holdings: [], overview: [] };
       const holdings = topLineItems
         .map(item => ({
@@ -1819,19 +1835,28 @@ function renderBacktestNotes(result = null) {
 
   function saveLastResult() {
     if (!state.lastResult) return;
-    try {
-      const payload = {
-        result: state.lastResult,
-        savedAt: new Date().toISOString(),
-        params: {
-          startDate: document.getElementById("startDate").value,
-          endDate: document.getElementById("endDate").value,
-          rebalanceMode: document.getElementById("rebalanceMode").value,
-          benchmarks: getSelectedBenchmarks()
-        }
-      };
-      localStorage.setItem(LAST_RESULT_KEY, JSON.stringify(payload));
-    } catch (e) { /* 结果太大时静默失败 */ }
+    const scheduleWrite = window.requestIdleCallback || (cb => setTimeout(cb, 0));
+    scheduleWrite(() => {
+      try {
+        const result = state.lastResult;
+        // Thin NAV to at most 1000 points for storage to reduce size
+        const nav = result.nav || [];
+        const thinnedNav = nav.length > 1000
+          ? nav.filter((_, i) => i % Math.ceil(nav.length / 1000) === 0)
+          : nav;
+        const payload = {
+          result: { ...result, nav: thinnedNav },
+          savedAt: new Date().toISOString(),
+          params: {
+            startDate: document.getElementById("startDate").value,
+            endDate: document.getElementById("endDate").value,
+            rebalanceMode: document.getElementById("rebalanceMode").value,
+            benchmarks: getSelectedBenchmarks()
+          }
+        };
+        localStorage.setItem(LAST_RESULT_KEY, JSON.stringify(payload));
+      } catch (e) { /* 结果太大时静默失败 */ }
+    }, { timeout: 2000 });
   }
 
   function loadLastResult() {
@@ -2199,12 +2224,12 @@ function renderBacktestNotes(result = null) {
   document.getElementById("saveComparisonBtn").addEventListener("click", saveCurrentToComparison);
   document.getElementById("clearComparisonsBtn").addEventListener("click", clearComparisons);
 
+  const debouncedChartRefresh = debounce(refreshChart, 150);
   document.getElementById("benchmarkBar").addEventListener("change", event => {
-    if (event.target.classList.contains("bm-check")) refreshChart();
+    if (event.target.classList.contains("bm-check")) debouncedChartRefresh();
   });
-
   document.getElementById("comparisonBar").addEventListener("change", event => {
-    if (event.target.classList.contains("comp-check")) refreshChart();
+    if (event.target.classList.contains("comp-check")) debouncedChartRefresh();
   });
 
   let resizeTimer = null;

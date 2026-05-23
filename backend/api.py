@@ -17,6 +17,8 @@ from backend.engine import (
     build_comparison_rebalance_modes,
     compute_metrics,
     compute_nav_series,
+    compute_nav_series_from_prepared,
+    prepare_nav_data,
     compute_periodic_returns,
     drop_unavailable_symbols,
     normalize_stock_code,
@@ -440,8 +442,9 @@ def execute_backtest(
             if code and name and code not in code_names:
                 code_names[code] = name
 
-    nav_series, applied_rebalance_dates, cost_log, holdings_evolution = compute_nav_series(
-        close_df, aligned_plans, primary_rebalance_dates,
+    nav_data = prepare_nav_data(close_df)
+    nav_series, applied_rebalance_dates, cost_log, holdings_evolution = compute_nav_series_from_prepared(
+        *nav_data, aligned_plans, primary_rebalance_dates,
         commission_rate=request.commission_rate,
         stamp_duty_rate=request.stamp_duty_rate,
         slippage_rate=request.slippage_rate,
@@ -464,8 +467,8 @@ def execute_backtest(
             mode=mode,
             custom_dates=[],
         )
-        comparison_nav_series, _, _, _ = compute_nav_series(
-            close_df, aligned_plans, comparison_rebalance_dates,
+        comparison_nav_series, _, _, _ = compute_nav_series_from_prepared(
+            *nav_data, aligned_plans, comparison_rebalance_dates,
             daily_rf_rate=daily_rf_rate,
         )
         comparison_metrics.append({

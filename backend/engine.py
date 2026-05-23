@@ -91,6 +91,14 @@ def build_plan_weight_vector(
         if idx is not None:
             vector[idx] = float(weight)
     return vector
+def prepare_nav_data(close_df: pd.DataFrame) -> Tuple[np.ndarray, Dict[str, int], Dict[int, str], pd.DatetimeIndex]:
+    """Precompute shared NAV calculation data to avoid redundant work across rebalance mode comparisons."""
+    trading_dates = close_df.index
+    returns_array = close_df.pct_change().to_numpy(dtype=np.float64, copy=True)
+    np.nan_to_num(returns_array, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
+    symbol_index = {code: idx for idx, code in enumerate(close_df.columns)}
+    reverse_index = {idx: code for code, idx in symbol_index.items()}
+    return returns_array, symbol_index, reverse_index, trading_dates
 
 
 def compute_nav_series(
@@ -109,15 +117,42 @@ def compute_nav_series(
         nav_series, applied_rebalances, cost_log, holdings_evolution
         holdings_evolution is None if track_top_n <= 0.
     """
-    trading_dates = close_df.index
+    returns_array, symbol_index, reverse_index, trading_dates = prepare_nav_data(close_df)
+    return compute_nav_series_from_prepared(
+        returns_array, symbol_index, reverse_index, trading_dates,
+        plans, rebalance_dates,
+        commission_rate=commission_rate,
+        stamp_duty_rate=stamp_duty_rate,
+        slippage_rate=slippage_rate,
+        daily_rf_rate=daily_rf_rate,
+        track_top_n=track_top_n,
+    )
+
+
+def compute_nav_series_from_prepared(
+    returns_array: np.ndarray,
+    symbol_index: Dict[str, int],
+    reverse_index: Dict[int, str],
+    trading_dates: pd.DatetimeIndex,
+    plans: List[CleanPlan],
+    rebalance_dates: List[pd.Timestamp],
+    commission_rate: float = 0.0,
+    stamp_duty_rate: float = 0.0,
+    slippage_rate: float = 0.0,
+    daily_rf_rate: float = 0.0,
+    track_top_n: int = 0,
+) -> Tuple[pd.Series, List[str], List[Dict[str, object]], Optional[List[Dict[str, object]]]]:
+    """Compute NAV series using already-prepared data arrays.
+
+    See compute_nav_series() for parameter documentation.
+    """
     date_count = len(trading_dates)
-    returns_array = close_df.pct_change().to_numpy(dtype=np.float64, copy=True)
-    np.nan_to_num(returns_array, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
-    symbol_index = {code: idx for idx, code in enumerate(close_df.columns)}
-    reverse_index = {idx: code for code, idx in symbol_index.items()}
     symbol_count = len(symbol_index)
     cost_rate = 2.0 * commission_rate + stamp_duty_rate + 2.0 * slippage_rate
     has_cost = cost_rate > 0.0
+
+    # ── Pre-compute date strings once ──
+    date_strs = [str(dt.date()) for dt in trading_dates]
 
     # ── Holdings tracking ──
     do_track = track_top_n > 0
@@ -125,7 +160,7 @@ def compute_nav_series(
     holdings_matrix: Optional[np.ndarray] = None
     holdings_cash_values: Optional[np.ndarray] = None
     if do_track:
-        holdings_dates = [str(pd.Timestamp(dt).date()) for dt in trading_dates]
+        holdings_dates = date_strs
         holdings_matrix = np.empty((date_count, symbol_count), dtype=np.float64)
         holdings_cash_values = np.empty(date_count, dtype=np.float64)
 
@@ -147,9 +182,9 @@ def compute_nav_series(
     weights = plan_vectors[active_plan_idx][1].copy()
     cash_weight = plan_vectors[active_plan_idx][2]
     rebalance_schedule: Dict[int, Tuple[np.ndarray, float]] = {}
-    for rebalance_day in sorted({pd.Timestamp(d) for d in rebalance_dates}):
+    for rebalance_day in sorted(set(rebalance_dates)):
         pos = trading_dates.searchsorted(rebalance_day)
-        if pos >= len(trading_dates) or pd.Timestamp(trading_dates[pos]) != rebalance_day:
+        if pos >= len(trading_dates) or trading_dates[pos] != rebalance_day:
             continue
         if pos == 0:
             continue
@@ -201,7 +236,7 @@ def compute_nav_series(
                     cost = turnover * cost_rate
                     nav_values[idx] *= (1.0 - cost)
                     cost_log.append({
-                        "date": str(pd.Timestamp(trading_dates[idx]).date()),
+                        "date": date_strs[idx],
                         "turnover": round(turnover * 100, 4),
                         "cost": round(cost * 100, 6),
                         "cost_rate": round(cost_rate * 100, 4),
@@ -210,7 +245,7 @@ def compute_nav_series(
 
             np.copyto(weights, target_weights)
             cash_weight = target_cash
-            applied_rebalances.append(str(pd.Timestamp(trading_dates[idx]).date()))
+            applied_rebalances.append(date_strs[idx])
 
         # ── Record holdings after each day ──
         if holdings_matrix is not None and holdings_cash_values is not None:
@@ -227,8 +262,6 @@ def compute_nav_series(
         mean_weights = holdings_matrix.mean(axis=0)
         positive_indices = np.flatnonzero(max_weights > 1e-10)
         if positive_indices.size:
-            # Rank by full-period importance, not only by the final day, so holdings
-            # that were major earlier in the backtest remain visible in the chart.
             importance = max_weights * 0.55 + mean_weights * 0.30 + latest_weights * 0.15
             ranked_indices = positive_indices[np.argsort(importance[positive_indices])[::-1]]
             selected_indices = ranked_indices[:track_top_n].tolist()
@@ -267,6 +300,9 @@ def compute_nav_series(
             })
 
     return nav_series, applied_rebalances, cost_log, holdings_evolution
+
+
+
 
 
 def compute_metrics(nav_series: pd.Series, risk_free_rate: float) -> Dict[str, object]:
@@ -420,12 +456,19 @@ def build_periodic_rebalance_dates(
                 periodic.append(pd.Timestamp(dt))
                 marker = key
     elif mode == "custom":
-        seen = set()
-        for raw in custom_dates:
-            mapped = map_to_next_trading_day(pd.Timestamp(raw), trading_dates)
-            if mapped is not None and mapped not in seen:
-                periodic.append(mapped)
-                seen.add(mapped)
+        if not custom_dates:
+            pass
+        else:
+            positions = trading_dates.searchsorted(
+                pd.DatetimeIndex([pd.Timestamp(raw) for raw in custom_dates])
+            )
+            seen = set()
+            for pos in positions:
+                if pos < len(trading_dates):
+                    dt = pd.Timestamp(trading_dates[pos])
+                    if dt not in seen:
+                        periodic.append(dt)
+                        seen.add(dt)
     periodic.sort()
     return periodic
 
