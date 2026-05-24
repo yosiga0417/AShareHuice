@@ -17,7 +17,7 @@ from backend.engine import (
     build_backtest_rebalance_dates,
     build_comparison_rebalance_modes,
     compute_metrics,
-    compute_nav_series_from_prepared,
+    compute_all_mode_navs,
     compute_periodic_returns,
     drop_unavailable_symbols,
     normalize_stock_code,
@@ -435,8 +435,22 @@ def execute_backtest(
                 code_names[code] = name
 
     nav_data = prepare_nav_data(close_df)
-    nav_series, applied_rebalance_dates, cost_log, holdings_evolution = compute_nav_series_from_prepared(
+
+    # ── Build comparison rebalance date sets ──
+    comparison_modes = build_comparison_rebalance_modes(request.rebalance_mode)
+    comparison_rebalance_dates = {
+        mode: build_backtest_rebalance_dates(
+            trading_dates=trading_dates,
+            plans=aligned_plans,
+            mode=mode,
+            custom_dates=[],
+        )
+        for mode in comparison_modes
+    }
+
+    nav_series, applied_rebalance_dates, cost_log, holdings_evolution, comparison_nav_series = compute_all_mode_navs(
         *nav_data, aligned_plans, primary_rebalance_dates,
+        comparison_rebalance_dates=comparison_rebalance_dates,
         commission_rate=request.commission_rate,
         stamp_duty_rate=request.stamp_duty_rate,
         slippage_rate=request.slippage_rate,
@@ -451,29 +465,20 @@ def execute_backtest(
 
     metrics = compute_metrics(nav_series, request.risk_free_rate)
     periodic_returns = compute_periodic_returns(nav_series)
-    comparison_metrics = []
-    for mode in build_comparison_rebalance_modes(request.rebalance_mode):
-        comparison_rebalance_dates = build_backtest_rebalance_dates(
-            trading_dates=trading_dates,
-            plans=aligned_plans,
-            mode=mode,
-            custom_dates=[],
-        )
-        comparison_nav_series, _, _, _ = compute_nav_series_from_prepared(
-            *nav_data, aligned_plans, comparison_rebalance_dates,
-            daily_rf_rate=daily_rf_rate,
-        )
-        comparison_metrics.append({
+    comparison_metrics = [
+        {
             "mode": mode,
             "label": REBALANCE_MODE_LABELS[mode],
-            "metrics": compute_metrics(comparison_nav_series, request.risk_free_rate),
-            "rebalance_count": len(comparison_rebalance_dates),
-        })
-
-    nav_points = [
-        {"date": str(pd.Timestamp(idx).date()), "value": float(round(value, 8))}
-        for idx, value in nav_series.items()
+            "metrics": compute_metrics(comparison_nav_series[mode], request.risk_free_rate),
+            "rebalance_count": len(comparison_rebalance_dates[mode]),
+        }
+        for mode in comparison_modes
     ]
+
+    nav_points = {
+        "dates": [str(pd.Timestamp(idx).date()) for idx in nav_series.index],
+        "values": [float(round(v, 8)) for v in nav_series.values],
+    }
 
     requested_benchmark_codes = set(request.benchmarks)
     benchmark_fetch_codes = build_benchmark_fetch_codes(request.benchmarks)

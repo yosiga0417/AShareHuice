@@ -274,6 +274,221 @@ def compute_nav_series_from_prepared(
 
     return nav_series, applied_rebalances, cost_log, holdings_evolution
 
+def compute_all_mode_navs(
+    returns_array: np.ndarray,
+    symbol_index: Dict[str, int],
+    reverse_index: Dict[int, str],
+    trading_dates: pd.DatetimeIndex,
+    plans: List[CleanPlan],
+    primary_rebalance_dates: List[pd.Timestamp],
+    comparison_rebalance_dates: Dict[str, List[pd.Timestamp]],
+    commission_rate: float = 0.0,
+    stamp_duty_rate: float = 0.0,
+    slippage_rate: float = 0.0,
+    daily_rf_rate: float = 0.0,
+    track_top_n: int = 0,
+) -> Tuple[pd.Series, List[str], List[Dict[str, object]], Optional[List[Dict[str, object]]], Dict[str, pd.Series]]:
+    """Compute primary NAV (with full details) + comparison NAVs in a single pass.
+
+    Returns (primary_nav, applied_rebalances, cost_log, holdings_evolution, comparison_navs).
+    """
+    date_count = len(trading_dates)
+    symbol_count = len(symbol_index)
+    cost_rate = 2.0 * commission_rate + stamp_duty_rate + 2.0 * slippage_rate
+    has_cost = cost_rate > 0.0
+
+    date_strs = [str(dt.date()) for dt in trading_dates]
+
+    # ── Holdings tracking (primary only) ──
+    do_track = track_top_n > 0
+    holdings_dates: List[str] = []
+    holdings_matrix: Optional[np.ndarray] = None
+    holdings_cash_values: Optional[np.ndarray] = None
+    if do_track:
+        holdings_dates = date_strs
+        holdings_matrix = np.empty((date_count, symbol_count), dtype=np.float64)
+        holdings_cash_values = np.empty(date_count, dtype=np.float64)
+
+    # ── Build plan vectors once ──
+    plan_vectors = [
+        (plan.effective_date,
+         build_plan_weight_vector(plan.weight_map, symbol_index, symbol_count),
+         plan.cash_weight)
+        for plan in plans
+    ]
+
+    first_trade_day = pd.Timestamp(trading_dates[0])
+
+    def _resolve_active_plan_idx(for_date: pd.Timestamp) -> int:
+        idx = 0
+        for i, (eff, _, _) in enumerate(plan_vectors):
+            if eff <= for_date:
+                idx = i
+            else:
+                break
+        return idx
+
+    def _build_schedule(rebalance_dates: List[pd.Timestamp]) -> Dict[int, Tuple[np.ndarray, float]]:
+        schedule: Dict[int, Tuple[np.ndarray, float]] = {}
+        active_idx = 0
+        for rd in sorted(set(rebalance_dates)):
+            pos = trading_dates.searchsorted(rd)
+            if pos >= len(trading_dates) or trading_dates[pos] != rd:
+                continue
+            if pos == 0:
+                continue
+            while active_idx + 1 < len(plan_vectors) and plan_vectors[active_idx + 1][0] <= rd:
+                active_idx += 1
+            schedule[pos] = (plan_vectors[active_idx][1], plan_vectors[active_idx][2])
+        return schedule
+
+    primary_schedule = _build_schedule(primary_rebalance_dates)
+    comp_schedules = {mode: _build_schedule(dates) for mode, dates in comparison_rebalance_dates.items()}
+    comparison_modes = list(comparison_rebalance_dates.keys())
+
+    # ── Initialize primary state ──
+    active_plan_idx = _resolve_active_plan_idx(first_trade_day)
+    primary_weights = plan_vectors[active_plan_idx][1].copy()
+    primary_cash = plan_vectors[active_plan_idx][2]
+    primary_nav = np.empty(date_count, dtype=np.float64)
+    primary_nav[0] = 1.0
+    applied_rebalances = [str(first_trade_day.date())]
+    cost_log: List[Dict[str, object]] = []
+    position_values = np.empty(symbol_count, dtype=np.float64)
+    weight_delta = np.empty(symbol_count, dtype=np.float64) if has_cost else None
+
+    if holdings_matrix is not None:
+        holdings_matrix[0] = primary_weights
+        holdings_cash_values[0] = primary_cash  # type: ignore[union-attr]
+
+    # ── Initialize comparison state ──
+    comp_weights: Dict[str, np.ndarray] = {}
+    comp_cash: Dict[str, float] = {}
+    comp_nav: Dict[str, np.ndarray] = {}
+    for mode in comparison_modes:
+        comp_weights[mode] = primary_weights.copy()
+        comp_cash[mode] = primary_cash
+        comp_nav[mode] = np.empty(date_count, dtype=np.float64)
+        comp_nav[mode][0] = 1.0
+
+    # Reusable buffer for comparison drift
+    comp_pv = np.empty(symbol_count, dtype=np.float64)
+
+    # ── Day-by-day simulation ──
+    for idx in range(1, date_count):
+        today_ret = returns_array[idx]
+
+        # --- Primary ---
+        equity_ret = float(np.dot(primary_weights, today_ret))
+        portfolio_ret = equity_ret + primary_cash * daily_rf_rate
+        nav_growth = 1.0 + portfolio_ret
+        primary_nav[idx] = primary_nav[idx - 1] * nav_growth
+
+        # Drift primary weights
+        np.multiply(primary_weights, 1.0 + today_ret, out=position_values)
+        np.maximum(position_values, 0.0, out=position_values)
+        total_value = float(position_values.sum()) + primary_cash
+        if total_value > 0.0:
+            np.divide(position_values, total_value, out=primary_weights)
+            primary_cash = primary_cash * (1.0 + daily_rf_rate) / nav_growth
+
+        # Rebalance primary
+        if idx in primary_schedule:
+            target_w, target_c = primary_schedule[idx]
+            if has_cost and weight_delta is not None:
+                np.subtract(primary_weights, target_w, out=weight_delta)
+                np.maximum(weight_delta, 0.0, out=weight_delta)
+                sells = float(weight_delta.sum()) + max(0.0, primary_cash - target_c)
+                if sells > 0.0:
+                    cost = sells * cost_rate
+                    primary_nav[idx] *= (1.0 - cost)
+                    cost_log.append({
+                        "date": date_strs[idx],
+                        "turnover": round(sells * 100, 4),
+                        "cost": round(cost * 100, 6),
+                        "cost_rate": round(cost_rate * 100, 4),
+                    })
+                    position_values *= (1.0 - cost)
+            np.copyto(primary_weights, target_w)
+            primary_cash = target_c
+            applied_rebalances.append(date_strs[idx])
+
+        # Record primary holdings
+        if holdings_matrix is not None:
+            holdings_matrix[idx] = primary_weights
+            holdings_cash_values[idx] = primary_cash  # type: ignore[union-attr]
+
+        # --- Comparisons ---
+        for mode in comparison_modes:
+            w = comp_weights[mode]
+            c = comp_cash[mode]
+            eq_ret = float(np.dot(w, today_ret))
+            pf_ret = eq_ret + c * daily_rf_rate
+            comp_growth = 1.0 + pf_ret
+            comp_nav[mode][idx] = comp_nav[mode][idx - 1] * comp_growth
+
+            # Drift
+            np.multiply(w, 1.0 + today_ret, out=comp_pv)
+            np.maximum(comp_pv, 0.0, out=comp_pv)
+            tv = float(comp_pv.sum()) + c
+            if tv > 0.0:
+                np.divide(comp_pv, tv, out=w)
+                comp_cash[mode] = c * (1.0 + daily_rf_rate) / comp_growth
+
+            # Rebalance (no cost tracking for comparisons)
+            if idx in comp_schedules[mode]:
+                target_w, target_c = comp_schedules[mode][idx]
+                np.copyto(w, target_w)
+                comp_cash[mode] = target_c
+
+    primary_series = pd.Series(primary_nav, index=trading_dates, name="nav")
+    comparison_series = {
+        mode: pd.Series(comp_nav[mode], index=trading_dates, name=f"nav_{mode}")
+        for mode in comparison_modes
+    }
+
+    # ── Build holdings evolution (columnar) ──
+    holdings_evolution: Optional[List[Dict[str, object]]] = None
+    if holdings_matrix is not None and holdings_cash_values is not None:
+        latest_weights = holdings_matrix[-1]
+        max_weights = holdings_matrix.max(axis=0)
+        mean_weights = holdings_matrix.mean(axis=0)
+        positive_indices = np.flatnonzero(max_weights > 1e-10)
+        if positive_indices.size:
+            importance = max_weights * 0.55 + mean_weights * 0.30 + latest_weights * 0.15
+            ranked_indices = positive_indices[np.argsort(importance[positive_indices])[::-1]]
+            selected_indices = ranked_indices[:track_top_n].tolist()
+        else:
+            selected_indices = []
+        holdings_evolution = [
+            {
+                "code": reverse_index[idx],
+                "dates": holdings_dates,
+                "weights": [round(float(w), 6) for w in holdings_matrix[:, idx]],
+            }
+            for idx in selected_indices
+        ]
+
+        if selected_indices:
+            other_values = holdings_matrix.sum(axis=1) - holdings_matrix[:, selected_indices].sum(axis=1)
+        else:
+            other_values = holdings_matrix.sum(axis=1)
+        np.maximum(other_values, 0.0, out=other_values)
+        if np.any(other_values > 0.0001):
+            holdings_evolution.append({
+                "code": "其他",
+                "dates": holdings_dates,
+                "weights": [round(float(w), 6) for w in other_values],
+            })
+
+        if np.any(holdings_cash_values > 0.0001):
+            holdings_evolution.append({
+                "code": "现金",
+                "dates": holdings_dates,
+                "weights": [round(float(c), 6) for c in holdings_cash_values],
+            })
+
+    return primary_series, applied_rebalances, cost_log, holdings_evolution, comparison_series
 
 
 

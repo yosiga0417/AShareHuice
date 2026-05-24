@@ -231,6 +231,63 @@
     return s;
   }
 
+  function normalizeValueSeries(series) {
+    if (Array.isArray(series)) {
+      const filtered = series.filter(item => item?.date);
+      return {
+        dates: filtered.map(item => item.date),
+        values: filtered.map(item => Number(item.value))
+      };
+    }
+    if (series && Array.isArray(series.dates) && Array.isArray(series.values)) {
+      const limit = Math.min(series.dates.length, series.values.length);
+      return {
+        dates: series.dates.slice(0, limit),
+        values: series.values.slice(0, limit).map(value => Number(value))
+      };
+    }
+    return { dates: [], values: [] };
+  }
+
+  function hasValueSeriesData(series) {
+    return normalizeValueSeries(series).dates.length > 0;
+  }
+
+  function normalizeBenchmarkNavs(benchmarkNavs = {}) {
+    return Object.fromEntries(
+      Object.entries(benchmarkNavs || {}).map(([code, series]) => [code, normalizeValueSeries(series)])
+    );
+  }
+
+  function normalizeHoldingSeries(item = {}) {
+    if (Array.isArray(item.data)) {
+      const filtered = item.data.filter(point => point?.date);
+      return {
+        ...item,
+        dates: filtered.map(point => point.date),
+        weights: filtered.map(point => Number(point.weight))
+      };
+    }
+    if (Array.isArray(item.dates) && Array.isArray(item.weights)) {
+      const limit = Math.min(item.dates.length, item.weights.length);
+      return {
+        ...item,
+        dates: item.dates.slice(0, limit),
+        weights: item.weights.slice(0, limit).map(weight => Number(weight))
+      };
+    }
+    return { ...item, dates: [], weights: [] };
+  }
+
+  function normalizeBacktestResult(result = {}) {
+    return {
+      ...result,
+      nav: normalizeValueSeries(result.nav),
+      benchmark_nav: normalizeBenchmarkNavs(result.benchmark_nav || {}),
+      holdings_evolution: (result.holdings_evolution || []).map(normalizeHoldingSeries)
+    };
+  }
+
 
   /* ────────────────────────────────────────────────
      Comparison management
@@ -240,7 +297,9 @@
       const raw = localStorage.getItem(COMPARISON_STORAGE_KEY);
       if (!raw) return [];
       const data = JSON.parse(raw);
-      return Array.isArray(data) ? data : [];
+      return Array.isArray(data)
+        ? data.map(comp => ({ ...comp, nav: normalizeValueSeries(comp.nav) }))
+        : [];
     } catch (e) { return []; }
   }
 
@@ -251,14 +310,15 @@
   }
 
   function saveCurrentToComparison() {
-    if (!state.lastResult?.nav?.length) return;
+    const nav = normalizeValueSeries(state.lastResult?.nav);
+    if (!nav.dates.length) return;
     const selectedMode = document.getElementById("rebalanceMode").value;
     const label = `${getRebalanceModeLabel(selectedMode, selectedMode, true)} \u00b7 ${new Date().toLocaleString("zh-CN", { month:"short", day:"numeric", hour:"2-digit", minute:"2-digit" })}`;
     const comp = {
       id: Date.now(),
       label,
       createdAt: new Date().toISOString(),
-      nav: state.lastResult.nav,
+      nav,
       rebalanceDates: state.lastResult.applied_rebalance_dates || [],
       metrics: state.lastResult.metrics || {}
     };
@@ -859,8 +919,10 @@
     const dom = document.getElementById("navChart");
     if (!state.chart) state.chart = echarts.init(dom);
 
-    const dates = nav.map(item => item.date);
-    const values = nav.map(item => item.value);
+    const navSeries = normalizeValueSeries(nav);
+    const normalizedBenchmarkNavs = normalizeBenchmarkNavs(benchmarkNavs);
+    const dates = navSeries.dates;
+    const values = navSeries.values;
 
     const drawdown = [];
     let peak = values[0] ?? 1;
@@ -883,15 +945,18 @@
     const COMP_COLORS = ["#ef4444", "#8b5cf6", "#06b6d4", "#f59e0b", "#10b981", "#ec4899", "#6366f1", "#14b8a6"];
     const selectedCompIds = getSelectedComparisonIds();
     const comparisonSeries = state.savedComparisons
-      .filter(c => selectedCompIds.includes(c.id) && c.nav?.length)
+      .filter(c => selectedCompIds.includes(c.id) && hasValueSeriesData(c.nav))
       .map((comp, idx) => {
+        const compSeries = normalizeValueSeries(comp.nav);
+        const compDates = compSeries.dates;
+        const compValues = compSeries.values;
         const compMap = {};
-        (comp.nav || []).forEach(item => { compMap[item.date] = item.value; });
-        const compValues = dates.map(d => compMap[d] ?? null);
+        compDates.forEach((d, i) => { compMap[d] = compValues[i]; });
+        const alignedValues = dates.map(d => compMap[d] ?? null);
         return {
           id: `comparison-${comp.id}`,
           name: comp.label,
-          data: compValues,
+          data: alignedValues,
           type: "line",
           xAxisIndex: 0, yAxisIndex: 0,
           smooth: true, showSymbol: false, connectNulls: true,
@@ -902,11 +967,14 @@
     // Build benchmark series (filtered by checkbox state)
     const selectedBm = getSelectedBenchmarks();
     const benchmarkSeries = selectedBm
-      .filter(code => benchmarkNavs[code]?.length)
+      .filter(code => normalizedBenchmarkNavs[code]?.dates?.length)
       .map(code => {
+        const bmData = normalizedBenchmarkNavs[code];
+        const bmDates = bmData.dates;
+        let bmValues = bmData.values;
         const bmMap = {};
-        (benchmarkNavs[code] || []).forEach(item => { bmMap[item.date] = item.value; });
-        let bmValues = dates.map(d => bmMap[d] ?? null);
+        bmDates.forEach((d, i) => { bmMap[d] = bmValues[i]; });
+        bmValues = dates.map(d => bmMap[d] ?? null);
         // Always normalise to start at 1.0 so benchmarks align with portfolio NAV
         const firstIdx = bmValues.findIndex(v => v !== null);
         if (firstIdx >= 0 && bmValues[firstIdx] !== 0) {
@@ -1106,7 +1174,8 @@
   // ── Holdings evolution trend chart ──
   function renderHoldingsChart(holdingsEvolution = [], rebalanceDates = []) {
     const container = document.getElementById("holdingsChart");
-    if (!holdingsEvolution?.length) {
+    const normalizedHoldings = (holdingsEvolution || []).map(normalizeHoldingSeries);
+    if (!normalizedHoldings.length) {
       if (holdingsChart) {
         holdingsChart.dispose();
         holdingsChart = null;
@@ -1118,7 +1187,7 @@
 
     container.classList.remove("is-hidden");
 
-    const dates = (holdingsEvolution[0]?.data || []).map(d => d.date);
+    const dates = normalizedHoldings[0]?.dates || [];
     const dateIndexMap = new Map(dates.map((d, i) => [d, i]));
     if (!dates.length) {
       container.classList.add("is-hidden");
@@ -1193,7 +1262,7 @@
       const displayName = item.name && item.name !== item.code
         ? `${item.name}(${item.code})`
         : (item.name || item.code);
-      const values = (item.data || []).map(d => Number(d.weight));
+      const values = (item.weights || []).map(w => Number(w));
       const latestValue = Number(values[values.length - 1]) || 0;
       const maxValue = Math.max(...values);
       const avgValue = values.reduce((sum, value) => sum + value, 0) / values.length;
@@ -1212,7 +1281,7 @@
       };
     };
 
-    const items = holdingsEvolution.map(buildItem);
+    const items = normalizedHoldings.map(buildItem);
     const stockItems = items
       .filter(item => !item.isOther && !item.isCash)
       .sort((a, b) => b.score - a.score);
@@ -1570,9 +1639,10 @@
   // Re-render chart using stored result (called when benchmark/comparison checkboxes change)
   function refreshChart() {
     if (!state.lastResult) return;
-    const r = state.lastResult;
+    const r = normalizeBacktestResult(state.lastResult);
+    state.lastResult = r;
     renderChart(
-      r.nav || [],
+      r.nav,
       r.applied_rebalance_dates || [],
       r.benchmark_nav || {},
       r.rebalance_holdings || {}
@@ -1581,9 +1651,10 @@
   }
 
   function renderReport(result) {
-    const startDate = result.nav?.[0]?.date || "-";
-    const endDate = result.nav?.[result.nav.length - 1]?.date || "-";
-    const tradingDays = result.nav?.length || 0;
+    const nav = normalizeValueSeries(result.nav);
+    const startDate = nav.dates[0] || "-";
+    const endDate = nav.dates[nav.dates.length - 1] || "-";
+    const tradingDays = nav.dates.length;
     const rebalanceCount = (result.applied_rebalance_dates || []).length;
     const m = result.metrics || {};
     const items = [
@@ -1634,16 +1705,19 @@ function renderBacktestNotes(result = null) {
   }
 
   function exportCsv() {
-    const result = state.lastResult;
-    if (!result?.nav?.length) return;
+    const result = normalizeBacktestResult(state.lastResult || {});
+    if (!result.nav.dates.length) return;
+    state.lastResult = result;
 
     const bm = result.benchmark_nav || {};
-    const navDates = (result.nav || []).map(item => item.date);
-    const bmCodes = getSelectedBenchmarks().filter(code => bm[code]?.length);
+    const navDates = result.nav.dates;
+    const navValues = result.nav.values;
+    const bmCodes = getSelectedBenchmarks().filter(code => bm[code]?.dates?.length);
     const bmMaps = {};
     bmCodes.forEach(code => {
+      const bmData = bm[code];
       const rawMap = {};
-      (bm[code] || []).forEach(item => { rawMap[item.date] = item.value; });
+      (bmData.dates || []).forEach((d, i) => { rawMap[d] = bmData.values?.[i]; });
       const vals = navDates.map(d => rawMap[d] ?? null);
       const firstIdx = vals.findIndex(v => v !== null);
       const scale = firstIdx >= 0 && vals[firstIdx] !== 0 ? vals[firstIdx] : 1;
@@ -1656,13 +1730,14 @@ function renderBacktestNotes(result = null) {
     const bmHeaders = bmCodes.map(c => BENCHMARK_NAMES[c] || c);
     const headers = ["日期", "净值", "累计收益%", ...bmHeaders];
 
-    const rows = result.nav.map(item => {
-      const ret = ((item.value - 1) * 100).toFixed(2);
+    const rows = navDates.map((date, i) => {
+      const value = navValues[i];
+      const ret = ((value - 1) * 100).toFixed(2);
       const bmVals = bmCodes.map(c => {
-        const v = bmMaps[c]?.[item.date];
+        const v = bmMaps[c]?.[date];
         return v != null ? v.toFixed(6) : "";
       });
-      return [item.date, item.value.toFixed(6), ret, ...bmVals];
+      return [date, value.toFixed(6), ret, ...bmVals];
     });
 
     // Metrics section at bottom
@@ -1687,8 +1762,8 @@ function renderBacktestNotes(result = null) {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    const startDate = result.nav[0]?.date || "export";
-    const endDate = result.nav[result.nav.length - 1]?.date || "";
+    const startDate = navDates[0] || "export";
+    const endDate = navDates[navDates.length - 1] || "";
     a.download = `backtest_${startDate}_${endDate}.csv`;
     document.body.appendChild(a);
     a.click();
@@ -1845,12 +1920,18 @@ function renderBacktestNotes(result = null) {
     const scheduleWrite = window.requestIdleCallback || (cb => setTimeout(cb, 0));
     scheduleWrite(() => {
       try {
-        const result = state.lastResult;
+        const result = normalizeBacktestResult(state.lastResult);
         // Thin NAV to at most 1000 points for storage to reduce size
-        const nav = result.nav || [];
-        const thinnedNav = nav.length > 1000
-          ? nav.filter((_, i) => i % Math.ceil(nav.length / 1000) === 0)
-          : nav;
+        const nav = result.nav;
+        const navLen = nav.dates.length;
+        let thinnedNav = nav;
+        if (navLen > 1000) {
+          const stride = Math.ceil(navLen / 1000);
+          thinnedNav = {
+            dates: nav.dates.filter((_, i) => i % stride === 0),
+            values: nav.values.filter((_, i) => i % stride === 0)
+          };
+        }
         const payload = {
           result: { ...result, nav: thinnedNav },
           savedAt: new Date().toISOString(),
@@ -1871,14 +1952,16 @@ function renderBacktestNotes(result = null) {
       const raw = localStorage.getItem(LAST_RESULT_KEY);
       if (!raw) return null;
       const data = JSON.parse(raw);
-      if (!data?.result?.nav?.length) return null;
-      return data;
+      const result = normalizeBacktestResult(data?.result || {});
+      if (!result.nav.dates.length) return null;
+      return { ...data, result };
     } catch (e) {
       return null;
     }
   }
 
   function applyBacktestResult(data, elapsedSeconds) {
+    data = normalizeBacktestResult(data);
     state.lastResult = data;
     saveLastResult();
     renderMetrics(data.metrics || {}, data.comparison_metrics || []);
@@ -1902,8 +1985,8 @@ function renderBacktestNotes(result = null) {
     setFallbackLogs(fallbackLogs);
 
     upsertStatus(
-      `回测完成：${data.nav?.[0]?.date || "-"} 至 ${data.nav?.[data.nav.length - 1]?.date || "-"}，` +
-      `共 ${data.nav?.length || 0} 个交易日，累计耗时 ${formatElapsed(elapsedSeconds)}。`
+      `回测完成：${data.nav.dates[0] || "-"} 至 ${data.nav.dates[data.nav.dates.length - 1] || "-"}，` +
+      `共 ${data.nav.dates.length} 个交易日，累计耗时 ${formatElapsed(elapsedSeconds)}。`
     );
   }
 
@@ -2149,7 +2232,7 @@ function renderBacktestNotes(result = null) {
       state.lastResult = lastResult.result;
       renderMetrics(lastResult.result.metrics || {}, lastResult.result.comparison_metrics || []);
       renderChart(
-        lastResult.result.nav || [],
+        lastResult.result.nav,
         lastResult.result.applied_rebalance_dates || [],
         lastResult.result.benchmark_nav || {},
         lastResult.result.rebalance_holdings || {}

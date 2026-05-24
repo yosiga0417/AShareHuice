@@ -288,7 +288,7 @@ def fetch_benchmark_close_series_remote(
 
 def fetch_benchmark_nav(
     code: str, start_date: date, end_date: date
-) -> List[Dict[str, object]]:
+) -> Dict[str, object]:
     request_start = pd.Timestamp(start_date).date()
     request_end = pd.Timestamp(end_date).date()
     if request_start > request_end:
@@ -313,10 +313,10 @@ def fetch_benchmark_nav(
         result = slice_price_series(cached_series, request_start, request_end)
         if result.empty:
             raise RuntimeError("区间内没有可用基准行情")
-        return [
-            {"date": str(pd.Timestamp(idx).date()), "value": float(round(value, 8))}
-            for idx, value in result.items()
-        ]
+        return {
+            "dates": [str(pd.Timestamp(idx).date()) for idx in result.index],
+            "values": [float(round(v, 8)) for v in result.values],
+        }
 
 
 def fetch_benchmark_navs(
@@ -325,8 +325,8 @@ def fetch_benchmark_navs(
     start_date: date,
     end_date: date,
     progress_callback: Optional[StageProgressCallback] = None,
-) -> Tuple[Dict[str, List[Dict[str, object]]], List[str]]:
-    benchmark_nav: Dict[str, List[Dict[str, object]]] = {}
+) -> Tuple[Dict[str, Dict[str, object]], List[str]]:
+    benchmark_nav: Dict[str, Dict[str, object]] = {}
     warnings: List[str] = []
     total_codes = len(codes)
     if total_codes <= 0:
@@ -334,7 +334,7 @@ def fetch_benchmark_navs(
     worker_count = resolve_fetch_worker_count(total_codes)
     if progress_callback is not None:
         progress_callback(0, total_codes, f"开始拉取 {total_codes} 个基准行情（并发 {worker_count}）…")
-    results: Dict[str, List[Dict[str, object]]] = {}
+    results: Dict[str, Dict[str, object]] = {}
     errors: Dict[str, str] = {}
     completed = 0
     with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="benchmark-fetch") as executor:
