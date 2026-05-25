@@ -173,7 +173,9 @@ def get_backtest_task_payload(task_id: str) -> Dict[str, object]:
         return payload
 
 
-# ── Excel parsing helpers ──
+# ── Component file parsing helpers ──
+
+SUPPORTED_COMPONENT_FILE_EXTENSIONS = (".xls", ".xlsx", ".csv")
 
 def normalize_column_name(name: object) -> str:
     text = str(name).strip().lower()
@@ -300,6 +302,43 @@ def read_excel_table(content: bytes) -> pd.DataFrame:
     df.columns = headers
     df = df.dropna(how="all").reset_index(drop=True)
     return df
+
+
+def read_csv_table(content: bytes) -> pd.DataFrame:
+    last_error: Optional[Exception] = None
+    for encoding in ("utf-8-sig", "gb18030"):
+        try:
+            raw_df = pd.read_csv(
+                BytesIO(content),
+                dtype=str,
+                header=None,
+                encoding=encoding,
+                sep=None,
+                engine="python",
+            )
+            break
+        except pd.errors.EmptyDataError as exc:
+            raise HTTPException(status_code=400, detail="CSV 文件为空") from exc
+        except Exception as exc:
+            last_error = exc
+    else:
+        raise HTTPException(status_code=400, detail=f"CSV 读取失败: {last_error}") from last_error
+    raw_df = raw_df.dropna(how="all").reset_index(drop=True)
+    if raw_df.empty:
+        raise HTTPException(status_code=400, detail="CSV 文件为空")
+    header_row = detect_header_row(raw_df)
+    headers = make_unique_headers(raw_df.iloc[header_row].tolist())
+    df = raw_df.iloc[header_row + 1 :].reset_index(drop=True).copy()
+    df.columns = headers
+    df = df.dropna(how="all").reset_index(drop=True)
+    return df
+
+
+def read_component_table(filename: str, content: bytes) -> pd.DataFrame:
+    lower_name = filename.lower()
+    if lower_name.endswith(".csv"):
+        return read_csv_table(content)
+    return read_excel_table(content)
 
 
 def merge_components(components: List[ComponentInput]) -> Tuple[Dict[str, float], Dict[str, str]]:
@@ -589,12 +628,12 @@ def health() -> Dict[str, str]:
 async def parse_components(file: UploadFile = File(...)) -> Dict[str, object]:
     filename = file.filename or ""
     lower_name = filename.lower()
-    if not (lower_name.endswith(".xls") or lower_name.endswith(".xlsx")):
-        raise HTTPException(status_code=400, detail="仅支持 xls/xlsx 文件")
+    if not lower_name.endswith(SUPPORTED_COMPONENT_FILE_EXTENSIONS):
+        raise HTTPException(status_code=400, detail="仅支持 xls/xlsx/csv 文件")
     content = await file.read()
     if not content:
         raise HTTPException(status_code=400, detail="文件内容为空")
-    df = read_excel_table(content)
+    df = read_component_table(filename, content)
     code_col = choose_column(
         df.columns, CODE_COLUMN_CANDIDATES,
         preferred_keywords=CODE_COLUMN_PREFERRED_KEYWORDS,

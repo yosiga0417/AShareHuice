@@ -1857,18 +1857,18 @@ function renderBacktestNotes(result = null) {
   /* ────────────────────────────────────────────────
      Actions
   ──────────────────────────────────────────────── */
-  async function parseExcel() {
+  async function parseComponentFile() {
     const file = document.getElementById("fileInput").files[0];
-    if (!file) { upsertStatus("请先选择 xls/xlsx 文件。"); return; }
+    if (!file) { upsertStatus("请先选择 xls/xlsx/csv 文件。"); return; }
 
     const backend = getBackendUrl();
     const formData = new FormData();
     formData.append("file", file);
-    upsertStatus("正在解析 Excel 文件…");
+    upsertStatus("正在解析成分股文件…");
     try {
       const resp = await fetch(`${backend}/api/parse-components`, { method: "POST", body: formData });
       const data = await resp.json();
-      if (!resp.ok) throw new Error(data.detail || "Excel 解析失败");
+      if (!resp.ok) throw new Error(data.detail || "成分股文件解析失败");
       state.previewComponents = (data.components || []).map(item =>
         makeRow(item.code, item.name, item.weight)
       );
@@ -1877,9 +1877,9 @@ function renderBacktestNotes(result = null) {
         `${data.filename}：${data.row_count} 行，解析 ${data.parsed_count} 行，跳过 ${data.skipped_rows} 行。` +
         `代码列：${data.code_column}；权重列：${data.weight_column || "未识别(等权)"}。`;
       renderPreviewTable();
-      upsertStatus("Excel 解析完成，可应用到任一调仓计划。");
+      upsertStatus("成分股文件解析完成，可应用到任一调仓计划。");
     } catch (error) {
-      upsertStatus(`Excel 解析失败：${error.message}`);
+      upsertStatus(`成分股文件解析失败：${error.message}`);
     }
   }
 
@@ -2262,7 +2262,7 @@ function renderBacktestNotes(result = null) {
   /* ────────────────────────────────────────────────
      Event listeners
   ──────────────────────────────────────────────── */
-  document.getElementById("parseFileBtn").addEventListener("click", parseExcel);
+  document.getElementById("parseFileBtn").addEventListener("click", parseComponentFile);
   document.getElementById("applyPreviewBtn").addEventListener("click", applyPreviewToPlan);
   document.getElementById("runBacktestBtn").addEventListener("click", runBacktest);
   document.getElementById("addPlanBtn").addEventListener("click", () => addPlan(true));
