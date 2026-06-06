@@ -111,6 +111,8 @@ python3 backend.py
 |------|------|--------|
 | `BACKTEST_FETCH_WORKERS` | AKShare 行情拉取并发数 | `min(12, max(4, cpu_count * 2))` |
 | `BACKTEST_MAX_CONCURRENT` | 最大并发回测任务数 | `3` |
+| `BACKTEST_INTRADAY_QUOTE_TTL_SECONDS` | A 股交易时段内当天行情短缓存秒数 | `120` |
+| `BACKTEST_AFTER_CLOSE_QUOTE_TTL_SECONDS` | 收盘后当天行情临时缓存秒数 | `900` |
 
 ## 后端 API 接口
 
@@ -142,6 +144,7 @@ const poll = setInterval(async () => {
 - 股票价格数据和基准数据以 Feather 格式缓存在 `.cache/akshare/` 目录下。
 - 每个代码对应一个 `.feather` 文件，附带范围元数据（JSON）跟踪已缓存的日期区间。
 - 仅获取缺失日期范围的数据，避免重复 API 调用。
+- 请求区间包含当天时，交易时段内使用进程内短 TTL 缓存；15:05 之后成功获取的当天行情才写入长期 Feather 缓存。
 - `.cache/` 目录已加入 `.gitignore`。
 
 ## 注意事项

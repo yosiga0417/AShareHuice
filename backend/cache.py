@@ -3,10 +3,10 @@ from __future__ import annotations
 from datetime import date, timedelta
 from functools import lru_cache
 import json
-import os
 from pathlib import Path
 import threading
-from typing import Iterable, List, Optional, Tuple
+import time
+from typing import Dict, Iterable, List, Optional, Tuple
 
 import pandas as pd
 
@@ -21,6 +21,8 @@ BENCHMARK_META_DIR = CACHE_ROOT / "benchmark_close_meta"
 
 CACHE_RESOURCE_LOCKS: Dict[str, threading.Lock] = {}
 CACHE_RESOURCE_LOCKS_GUARD = threading.Lock()
+TODAY_QUOTE_CACHE: Dict[str, Tuple[pd.Series, Optional[str], float]] = {}
+TODAY_QUOTE_CACHE_GUARD = threading.Lock()
 
 
 def get_cache_resource_lock(namespace: str, key: str) -> threading.Lock:
@@ -31,6 +33,62 @@ def get_cache_resource_lock(namespace: str, key: str) -> threading.Lock:
             lock = threading.Lock()
             CACHE_RESOURCE_LOCKS[lock_key] = lock
         return lock
+
+
+def _today_quote_cache_key(namespace: str, key: str, quote_date: date) -> str:
+    return f"{namespace}:{key}:{quote_date.isoformat()}"
+
+
+def load_today_quote_cache(
+    namespace: str,
+    key: str,
+    quote_date: date,
+) -> Optional[Tuple[pd.Series, Optional[str]]]:
+    cache_key = _today_quote_cache_key(namespace, key, quote_date)
+    now = time.monotonic()
+    with TODAY_QUOTE_CACHE_GUARD:
+        entry = TODAY_QUOTE_CACHE.get(cache_key)
+        if entry is None:
+            return None
+        series, source, expires_at = entry
+        if expires_at <= now:
+            TODAY_QUOTE_CACHE.pop(cache_key, None)
+            return None
+        return series.copy(), source
+
+
+def save_today_quote_cache(
+    namespace: str,
+    key: str,
+    quote_date: date,
+    series: pd.Series,
+    *,
+    ttl_seconds: int,
+    source: Optional[str] = None,
+) -> None:
+    if ttl_seconds <= 0:
+        return
+    clean_series = normalize_price_series(series)
+    if clean_series.empty:
+        return
+    cache_key = _today_quote_cache_key(namespace, key, quote_date)
+    now = time.monotonic()
+    expires_at = now + ttl_seconds
+    with TODAY_QUOTE_CACHE_GUARD:
+        expired_keys = [
+            existing_key
+            for existing_key, (_series, _source, existing_expires_at) in TODAY_QUOTE_CACHE.items()
+            if existing_expires_at <= now
+        ]
+        for expired_key in expired_keys:
+            TODAY_QUOTE_CACHE.pop(expired_key, None)
+        TODAY_QUOTE_CACHE[cache_key] = (clean_series, source, expires_at)
+
+
+def clear_today_quote_cache(namespace: str, key: str, quote_date: date) -> None:
+    cache_key = _today_quote_cache_key(namespace, key, quote_date)
+    with TODAY_QUOTE_CACHE_GUARD:
+        TODAY_QUOTE_CACHE.pop(cache_key, None)
 
 
 def ensure_stock_cache_dirs() -> None:

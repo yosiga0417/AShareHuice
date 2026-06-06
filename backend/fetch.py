@@ -1,16 +1,18 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import date, timedelta
+from datetime import date, datetime, time as dt_time, timedelta
 import os
 import time
 from typing import Dict, List, Optional, Tuple
+from zoneinfo import ZoneInfo
 
 import akshare as ak
 import pandas as pd
 from fastapi import HTTPException
 
 from backend.cache import (
+    clear_today_quote_cache,
     compute_missing_ranges,
     expand_fetch_range,
     get_cache_resource_lock,
@@ -19,12 +21,14 @@ from backend.cache import (
     load_cached_stock_fallback,
     load_cached_stock_ranges,
     load_cached_stock_series,
+    load_today_quote_cache,
     merge_price_series,
     normalize_cached_ranges,
     save_cached_benchmark_series,
     save_cached_benchmark_ranges,
     save_cached_stock_ranges,
     save_cached_stock_series,
+    save_today_quote_cache,
     slice_price_series,
 )
 from backend.config import read_positive_int_env
@@ -32,6 +36,37 @@ DEFAULT_FETCH_WORKERS = min(12, max(4, (os.cpu_count() or 4) * 2))
 
 from backend.models import DEFAULT_BENCHMARK_CODES, StageProgressCallback
 FETCH_WORKER_LIMIT = read_positive_int_env("BACKTEST_FETCH_WORKERS", DEFAULT_FETCH_WORKERS)
+INTRADAY_QUOTE_TTL_SECONDS = read_positive_int_env("BACKTEST_INTRADAY_QUOTE_TTL_SECONDS", 120)
+AFTER_CLOSE_QUOTE_TTL_SECONDS = read_positive_int_env("BACKTEST_AFTER_CLOSE_QUOTE_TTL_SECONDS", 900)
+CHINA_TZ = ZoneInfo("Asia/Shanghai")
+MARKET_OPEN_TIME = dt_time(9, 30)
+MARKET_STABLE_CLOSE_TIME = dt_time(15, 5)
+
+
+def get_china_now() -> datetime:
+    return datetime.now(CHINA_TZ)
+
+
+def is_trading_weekday(day: date) -> bool:
+    return day.weekday() < 5
+
+
+def should_refresh_today_quote(now: datetime) -> bool:
+    return is_trading_weekday(now.date()) and now.time() >= MARKET_OPEN_TIME
+
+
+def should_persist_today_quote(now: datetime) -> bool:
+    return is_trading_weekday(now.date()) and now.time() >= MARKET_STABLE_CLOSE_TIME
+
+
+def today_quote_ttl_seconds(now: datetime) -> int:
+    if should_persist_today_quote(now):
+        return AFTER_CLOSE_QUOTE_TTL_SECONDS
+    return INTRADAY_QUOTE_TTL_SECONDS
+
+
+def date_is_cached(day: date, cached_ranges: List[Tuple[date, date]]) -> bool:
+    return any(start_date <= day <= end_date for start_date, end_date in cached_ranges)
 
 
 def resolve_fetch_worker_count(total_items: int) -> int:
@@ -143,11 +178,10 @@ def fetch_symbol_close_series(
     request_end = pd.Timestamp(end_date).date()
     if request_start > request_end:
         raise ValueError("开始日期不能晚于结束日期")
-    today = date.today()
-    historical_end = min(request_end, today - timedelta(days=1))
-    # 周末跳过当日拉取，避免无谓等待
-    weekend_skip = today.weekday() >= 5
-    includes_today = (not weekend_skip) and (request_start <= today <= request_end)
+    now = get_china_now()
+    today = now.date()
+    includes_today = request_start <= today <= request_end and should_refresh_today_quote(now)
+    historical_end = min(request_end, today - timedelta(days=1)) if request_end >= today else request_end
     with get_cache_resource_lock("stock", symbol):
         cached_series = load_cached_stock_series(symbol)
         cached_ranges = load_cached_stock_ranges(symbol)
@@ -169,21 +203,48 @@ def fetch_symbol_close_series(
                 cache_dirty = True
                 ranges_dirty = True
         refresh_error: Optional[Exception] = None
-        if includes_today:
+        result_series = cached_series
+        should_fetch_today = includes_today and not date_is_cached(today, cached_ranges)
+        if should_fetch_today:
+            persist_today = should_persist_today_quote(now)
+            cached_today = None if persist_today else load_today_quote_cache("stock", symbol, today)
             try:
-                today_series, source = fetch_symbol_close_series_remote(symbol, today, today)
-                cached_series = merge_price_series(cached_series, today_series, skip_normalize=True)
-                fetched_sources.append(source)
+                if cached_today is None:
+                    today_series, source = fetch_symbol_close_series_remote(symbol, today, today)
+                    if persist_today:
+                        clear_today_quote_cache("stock", symbol, today)
+                    else:
+                        save_today_quote_cache(
+                            "stock",
+                            symbol,
+                            today,
+                            today_series,
+                            ttl_seconds=today_quote_ttl_seconds(now),
+                            source=source,
+                        )
+                else:
+                    today_series, source = cached_today
+                if source:
+                    fetched_sources.append(source)
                 if source == "stock_zh_a_hist_tx":
                     has_new_fallback = True
-                cache_dirty = True
+                if persist_today:
+                    cached_series = merge_price_series(cached_series, today_series, skip_normalize=True)
+                    cached_ranges = normalize_cached_ranges(cached_ranges + [(today, today)])
+                    result_series = cached_series
+                    cache_dirty = True
+                    ranges_dirty = True
+                else:
+                    result_series = merge_price_series(cached_series, today_series, skip_normalize=True)
             except Exception as exc:
                 refresh_error = exc
+        else:
+            result_series = cached_series
         if cache_dirty:
             save_cached_stock_series(symbol, cached_series)
         if ranges_dirty or has_new_fallback != cached_fallback:
             save_cached_stock_ranges(symbol, cached_ranges, has_fallback=has_new_fallback)
-        result = slice_price_series(cached_series, request_start, request_end)
+        result = slice_price_series(result_series, request_start, request_end)
         if result.empty:
             if refresh_error is not None:
                 raise RuntimeError(str(refresh_error))
@@ -293,24 +354,56 @@ def fetch_benchmark_nav(
     request_end = pd.Timestamp(end_date).date()
     if request_start > request_end:
         raise ValueError("开始日期不能晚于结束日期")
+    now = get_china_now()
+    today = now.date()
+    includes_today = request_start <= today <= request_end and should_refresh_today_quote(now)
+    historical_end = min(request_end, today - timedelta(days=1)) if request_end >= today else request_end
     with get_cache_resource_lock("benchmark", code):
         cached_series = load_cached_benchmark_series(code)
         cached_ranges = load_cached_benchmark_ranges(code)
         cache_dirty = False
         ranges_dirty = False
-        missing_ranges = compute_missing_ranges(request_start, request_end, cached_ranges)
-        for gap_start, gap_end in missing_ranges:
-            fetch_start, fetch_end = expand_fetch_range(gap_start, gap_end, cached_ranges)
-            gap_series = fetch_benchmark_close_series_remote(code, fetch_start, fetch_end)
-            cached_series = merge_price_series(cached_series, gap_series, skip_normalize=True)
-            cached_ranges = normalize_cached_ranges(cached_ranges + [(gap_start, gap_end)])
-            cache_dirty = True
-            ranges_dirty = True
+        if request_start <= historical_end:
+            missing_ranges = compute_missing_ranges(request_start, historical_end, cached_ranges)
+            for gap_start, gap_end in missing_ranges:
+                fetch_start, fetch_end = expand_fetch_range(gap_start, gap_end, cached_ranges)
+                gap_series = fetch_benchmark_close_series_remote(code, fetch_start, fetch_end)
+                cached_series = merge_price_series(cached_series, gap_series, skip_normalize=True)
+                cached_ranges = normalize_cached_ranges(cached_ranges + [(gap_start, gap_end)])
+                cache_dirty = True
+                ranges_dirty = True
+        result_series = cached_series
+        should_fetch_today = includes_today and not date_is_cached(today, cached_ranges)
+        if should_fetch_today:
+            persist_today = should_persist_today_quote(now)
+            cached_today = None if persist_today else load_today_quote_cache("benchmark", code, today)
+            if cached_today is None:
+                today_series = fetch_benchmark_close_series_remote(code, today, today)
+                if persist_today:
+                    clear_today_quote_cache("benchmark", code, today)
+                else:
+                    save_today_quote_cache(
+                        "benchmark",
+                        code,
+                        today,
+                        today_series,
+                        ttl_seconds=today_quote_ttl_seconds(now),
+                    )
+            else:
+                today_series, _source = cached_today
+            if persist_today:
+                cached_series = merge_price_series(cached_series, today_series, skip_normalize=True)
+                cached_ranges = normalize_cached_ranges(cached_ranges + [(today, today)])
+                result_series = cached_series
+                cache_dirty = True
+                ranges_dirty = True
+            else:
+                result_series = merge_price_series(cached_series, today_series, skip_normalize=True)
         if cache_dirty:
             save_cached_benchmark_series(code, cached_series)
         if ranges_dirty:
             save_cached_benchmark_ranges(code, cached_ranges)
-        result = slice_price_series(cached_series, request_start, request_end)
+        result = slice_price_series(result_series, request_start, request_end)
         if result.empty:
             raise RuntimeError("区间内没有可用基准行情")
         return {
