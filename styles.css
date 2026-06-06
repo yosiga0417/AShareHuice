@@ -1105,6 +1105,7 @@
       width: 12px;
       height: 3px;
       border-radius: 2px;
+      flex-shrink: 0;
     }
 
     /* ── Auto-normalize toggle ── */
@@ -1242,7 +1243,110 @@
     th.col-weight { width: 93px; }
     th.col-action { width: 44px; }
 
-    .comparison-item { margin-right: var(--space-2); }
+    .comparison-item {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      min-width: 0;
+      max-width: 360px;
+      margin-right: var(--space-2);
+      padding: 2px 4px 2px 2px;
+      border-radius: var(--radius-sm);
+      background: var(--surface);
+      border: 1px solid var(--border-light);
+    }
+
+    .comparison-toggle {
+      min-width: 0;
+      max-width: 260px;
+    }
+
+    .comparison-name {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: var(--text);
+    }
+
+    .comparison-action {
+      width: 21px;
+      height: 21px;
+      padding: 0;
+      flex-shrink: 0;
+    }
+
+    .modal-backdrop {
+      position: fixed;
+      inset: 0;
+      z-index: 20;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+      background: rgba(15, 23, 42, 0.28);
+    }
+
+    .comparison-modal {
+      width: min(430px, calc(100vw - 40px));
+      padding: 15px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      background: var(--surface);
+      box-shadow: 0 16px 40px rgba(15, 23, 42, 0.18);
+    }
+
+    .modal-head {
+      display: flex;
+      align-items: center;
+      gap: var(--space-3);
+      margin-bottom: var(--space-5);
+    }
+
+    .modal-head h3 {
+      flex: 1;
+      margin: 0;
+      font-size: var(--text-lg);
+      color: var(--text-dark);
+    }
+
+    .modal-close {
+      width: 25px;
+      height: 25px;
+      padding: 0;
+      font-size: var(--text-lg);
+    }
+
+    #comparisonNameInput {
+      width: 100%;
+      margin-bottom: var(--space-2);
+    }
+
+    .field-error {
+      min-height: 16px;
+      color: var(--danger);
+      font-size: var(--text-sm);
+      line-height: 1.35;
+    }
+
+    .comparison-name-meta {
+      margin-top: var(--space-2);
+      padding: var(--space-3);
+      border: 1px solid var(--border-light);
+      border-radius: var(--radius-sm);
+      background: var(--surface-subtle);
+      color: var(--subtle);
+      font-size: var(--text-sm);
+      line-height: 1.6;
+    }
+
+    .modal-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: var(--space-3);
+      margin-top: var(--space-5);
+    }
+
     .auto-norm-offset { margin-left: var(--space-1); }
     #previewWrap { margin-top: var(--space-3); }
     #customDatesRow { margin-bottom: var(--space-2); }

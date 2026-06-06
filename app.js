@@ -25,7 +25,7 @@
     lastResult: null,
     backtestProgress: null,
     expandedPlans: new Set(),
-    savedComparisons: []  // { id, label, createdAt, nav, rebalanceDates }
+    savedComparisons: []  // { id, name, label, createdAt, nav, rebalanceDates, meta }
   };
 
   const metricsConfig = [
@@ -317,7 +317,7 @@
       if (!raw) return [];
       const data = JSON.parse(raw);
       return Array.isArray(data)
-        ? data.map(comp => ({ ...comp, nav: normalizeValueSeries(comp.nav) }))
+        ? data.map(normalizeComparison)
         : [];
     } catch (e) { return []; }
   }
@@ -328,30 +328,214 @@
     } catch (e) { /* ignore */ }
   }
 
-  function saveCurrentToComparison() {
+  function getComparisonDisplayName(comp = {}) {
+    return String(comp.name || comp.label || "未命名回测").trim() || "未命名回测";
+  }
+
+  function formatDateRangeShort(startDate, endDate) {
+    if (!startDate || !endDate) return "";
+    const [startYear, startMonth] = String(startDate).split("-");
+    const [endYear, endMonth] = String(endDate).split("-");
+    if (!startYear || !startMonth || !endYear || !endMonth) return "";
+    if (startYear === endYear) return `${startYear}-${startMonth}~${endMonth}`;
+    return `${startYear}-${startMonth}~${endYear}-${endMonth}`;
+  }
+
+  function getCurrentComponentCount() {
+    const ids = new Set();
+    state.plans.forEach(plan => {
+      (plan.components || []).forEach(row => {
+        const code = normalizeCode(row.code);
+        if (code) ids.add(code);
+      });
+    });
+    return ids.size;
+  }
+
+  function buildComparisonMeta(result, selectedMode, createdAt = new Date()) {
+    const nav = normalizeValueSeries(result?.nav);
+    const startDate = nav.dates[0] || document.getElementById("startDate").value || "";
+    const endDate = nav.dates[nav.dates.length - 1] || document.getElementById("endDate").value || "";
+    const modeLabel = getRebalanceModeLabel(selectedMode, selectedMode, true);
+    const totalReturn = result?.metrics?.total_return;
+    const maxDrawdown = result?.metrics?.max_drawdown;
+    const sharpe = result?.metrics?.sharpe_ratio;
+    const componentCount = getCurrentComponentCount();
+    return {
+      startDate,
+      endDate,
+      mode: selectedMode,
+      modeLabel,
+      componentCount,
+      totalReturn: Number.isFinite(Number(totalReturn)) ? Number(totalReturn) : null,
+      maxDrawdown: Number.isFinite(Number(maxDrawdown)) ? Number(maxDrawdown) : null,
+      sharpe: Number.isFinite(Number(sharpe)) ? Number(sharpe) : null,
+      rebalanceCount: Array.isArray(result?.applied_rebalance_dates) ? result.applied_rebalance_dates.length : 0,
+      savedTime: createdAt.toISOString()
+    };
+  }
+
+  function buildDefaultComparisonName(meta = {}) {
+    const parts = [];
+    if (meta.modeLabel) parts.push(meta.modeLabel);
+    const rangeText = formatDateRangeShort(meta.startDate, meta.endDate);
+    if (rangeText) parts.push(rangeText);
+    if (meta.componentCount) parts.push(`${meta.componentCount}只`);
+    if (meta.totalReturn != null && Number.isFinite(Number(meta.totalReturn))) {
+      parts.push(formatMetric(meta.totalReturn, "pct"));
+    }
+    return parts.join("｜") || `回测结果｜${new Date().toLocaleString("zh-CN", { month:"numeric", day:"numeric", hour:"2-digit", minute:"2-digit" })}`;
+  }
+
+  function formatComparisonMetaText(meta = {}) {
+    const lines = [];
+    if (meta.startDate && meta.endDate) lines.push(`${meta.startDate} 至 ${meta.endDate}`);
+    if (meta.modeLabel) lines.push(meta.modeLabel);
+    if (meta.componentCount) lines.push(`${meta.componentCount} 只成分股`);
+    if (meta.totalReturn != null && Number.isFinite(Number(meta.totalReturn))) lines.push(`收益 ${formatMetric(meta.totalReturn, "pct")}`);
+    if (meta.maxDrawdown != null && Number.isFinite(Number(meta.maxDrawdown))) lines.push(`回撤 ${formatMetric(meta.maxDrawdown, "pct")}`);
+    if (meta.sharpe != null && Number.isFinite(Number(meta.sharpe))) lines.push(`夏普 ${formatMetric(meta.sharpe, "num")}`);
+    if (meta.savedTime) {
+      lines.push(`保存于 ${new Date(meta.savedTime).toLocaleString("zh-CN", { month:"numeric", day:"numeric", hour:"2-digit", minute:"2-digit" })}`);
+    }
+    return lines.join(" · ");
+  }
+
+  function sanitizeComparisonName(value) {
+    return String(value || "").trim().replace(/\s+/g, " ").slice(0, 60);
+  }
+
+  let comparisonNameResolver = null;
+
+  function closeComparisonNameModal(value = null) {
+    const modal = document.getElementById("comparisonNameModal");
+    modal.classList.add("is-hidden");
+    document.body.classList.remove("modal-open");
+    const resolver = comparisonNameResolver;
+    comparisonNameResolver = null;
+    if (resolver) resolver(value);
+  }
+
+  function openComparisonNameModal({ title, defaultName, metaText, confirmText = "保存" }) {
+    const modal = document.getElementById("comparisonNameModal");
+    const titleEl = document.getElementById("comparisonNameTitle");
+    const input = document.getElementById("comparisonNameInput");
+    const metaEl = document.getElementById("comparisonNameMeta");
+    const errorEl = document.getElementById("comparisonNameError");
+    const confirmBtn = document.getElementById("comparisonNameConfirm");
+
+    if (!modal || !input || !confirmBtn) {
+      return Promise.resolve(sanitizeComparisonName(window.prompt(title || "命名回测结果", defaultName || "") || ""));
+    }
+
+    titleEl.textContent = title || "命名回测结果";
+    input.value = defaultName || "";
+    metaEl.textContent = metaText || "";
+    errorEl.textContent = "";
+    confirmBtn.textContent = confirmText;
+    modal.classList.remove("is-hidden");
+    document.body.classList.add("modal-open");
+
+    setTimeout(() => {
+      input.focus();
+      input.select();
+    }, 0);
+
+    return new Promise(resolve => {
+      comparisonNameResolver = resolve;
+    });
+  }
+
+  function normalizeComparison(comp = {}) {
+    const nav = normalizeValueSeries(comp.nav);
+    const name = sanitizeComparisonName(comp.name || comp.label) || "未命名回测";
+    const createdAt = comp.createdAt || comp.meta?.savedTime || new Date().toISOString();
+    const mode = comp.meta?.mode || comp.mode || "";
+    const modeLabel = comp.meta?.modeLabel || (mode ? getRebalanceModeLabel(mode, mode, true) : "");
+    const metrics = comp.metrics || {};
+    return {
+      ...comp,
+      id: Number(comp.id) || Date.now(),
+      name,
+      label: name,
+      createdAt,
+      nav,
+      rebalanceDates: comp.rebalanceDates || [],
+      metrics,
+      meta: {
+        ...(comp.meta || {}),
+        startDate: comp.meta?.startDate || nav.dates[0] || "",
+        endDate: comp.meta?.endDate || nav.dates[nav.dates.length - 1] || "",
+        mode,
+        modeLabel,
+        totalReturn: comp.meta?.totalReturn ?? metrics.total_return ?? null,
+        maxDrawdown: comp.meta?.maxDrawdown ?? metrics.max_drawdown ?? null,
+        sharpe: comp.meta?.sharpe ?? metrics.sharpe_ratio ?? null,
+        savedTime: comp.meta?.savedTime || createdAt
+      }
+    };
+  }
+
+  async function saveCurrentToComparison() {
     const nav = normalizeValueSeries(state.lastResult?.nav);
     if (!nav.dates.length) return;
     const selectedMode = document.getElementById("rebalanceMode").value;
-    const label = `${getRebalanceModeLabel(selectedMode, selectedMode, true)} \u00b7 ${new Date().toLocaleString("zh-CN", { month:"short", day:"numeric", hour:"2-digit", minute:"2-digit" })}`;
+    const createdAt = new Date();
+    const meta = buildComparisonMeta(state.lastResult, selectedMode, createdAt);
+    const defaultName = buildDefaultComparisonName(meta);
+    const name = sanitizeComparisonName(await openComparisonNameModal({
+      title: "保存对比快照",
+      defaultName,
+      metaText: formatComparisonMetaText(meta),
+      confirmText: "保存"
+    }));
+    if (!name) return;
     const comp = {
       id: Date.now(),
-      label,
-      createdAt: new Date().toISOString(),
+      name,
+      label: name,
+      autoLabel: defaultName,
+      createdAt: createdAt.toISOString(),
       nav,
       rebalanceDates: state.lastResult.applied_rebalance_dates || [],
-      metrics: state.lastResult.metrics || {}
+      metrics: state.lastResult.metrics || {},
+      meta
     };
+    const selectedIds = new Set(getSelectedComparisonIds());
+    selectedIds.add(comp.id);
     state.savedComparisons.push(comp);
     saveComparisons();
-    renderComparisonBar();
+    renderComparisonBar(selectedIds);
     refreshChart();
-    upsertStatus(`已保存对比："${label}"。`);
+    upsertStatus(`已保存对比："${name}"。`);
+  }
+
+  async function renameComparison(id) {
+    const comp = state.savedComparisons.find(item => item.id === id);
+    if (!comp) return;
+    const currentName = getComparisonDisplayName(comp);
+    const nextName = sanitizeComparisonName(await openComparisonNameModal({
+      title: "重命名回测结果",
+      defaultName: currentName,
+      metaText: formatComparisonMetaText(comp.meta || {}),
+      confirmText: "更新"
+    }));
+    if (!nextName || nextName === currentName) return;
+    comp.name = nextName;
+    comp.label = nextName;
+    const selectedIds = new Set(getSelectedComparisonIds());
+    saveComparisons();
+    renderComparisonBar(selectedIds);
+    refreshChart();
+    upsertStatus(`已重命名对比："${nextName}"。`);
   }
 
   function removeComparison(id) {
+    const selectedIds = new Set(getSelectedComparisonIds());
+    selectedIds.delete(id);
     state.savedComparisons = state.savedComparisons.filter(c => c.id !== id);
     saveComparisons();
-    renderComparisonBar();
+    renderComparisonBar(selectedIds);
     refreshChart();
   }
 
@@ -366,22 +550,30 @@
     return [...document.querySelectorAll(".comp-check:checked")].map(cb => Number(cb.value));
   }
 
-  function renderComparisonBar() {
+  function renderComparisonBar(selectedIds = null) {
     const bar = document.getElementById("comparisonBar");
     const container = document.getElementById("comparisonCheckboxes");
     if (!state.savedComparisons.length) {
       bar.classList.add("is-hidden");
+      container.innerHTML = "";
       return;
     }
     bar.classList.remove("is-hidden");
     const COMP_COLORS = ["#ef4444", "#8b5cf6", "#06b6d4", "#f59e0b", "#10b981", "#ec4899", "#6366f1", "#14b8a6"];
     container.innerHTML = state.savedComparisons.map((comp, idx) => {
       const color = COMP_COLORS[idx % COMP_COLORS.length];
-      return `<label class="bm-label comparison-item">
-        <input type="checkbox" class="comp-check" value="${comp.id}" checked />
-        <span class="bm-swatch" style="background:${color};"></span>${comp.label}
-        <button class="danger xs auto-norm-offset" onclick="event.stopPropagation();removeComparison(${comp.id})">\u00d7</button>
-      </label>`;
+      const name = getComparisonDisplayName(comp);
+      const metaText = formatComparisonMetaText(comp.meta || {});
+      const checked = selectedIds ? selectedIds.has(comp.id) : true;
+      return `<span class="comparison-item" title="${escapeHtml(metaText)}">
+        <label class="bm-label comparison-toggle">
+          <input type="checkbox" class="comp-check" value="${comp.id}" ${checked ? "checked" : ""} />
+          <span class="bm-swatch" style="background:${color};"></span>
+          <span class="comparison-name">${escapeHtml(name)}</span>
+        </label>
+        <button type="button" class="light xs comparison-action" data-action="rename-comparison" data-id="${comp.id}" aria-label="重命名 ${escapeHtml(name)}">✎</button>
+        <button type="button" class="danger xs comparison-action" data-action="remove-comparison" data-id="${comp.id}" aria-label="删除 ${escapeHtml(name)}">\u00d7</button>
+      </span>`;
     }).join("");
   }
 
@@ -964,8 +1156,9 @@
     const COMP_COLORS = ["#ef4444", "#8b5cf6", "#06b6d4", "#f59e0b", "#10b981", "#ec4899", "#6366f1", "#14b8a6"];
     const selectedCompIds = getSelectedComparisonIds();
     const comparisonSeries = state.savedComparisons
-      .filter(c => selectedCompIds.includes(c.id) && hasValueSeriesData(c.nav))
-      .map((comp, idx) => {
+      .map((comp, originalIndex) => ({ comp, originalIndex }))
+      .filter(({ comp }) => selectedCompIds.includes(comp.id) && hasValueSeriesData(comp.nav))
+      .map(({ comp, originalIndex }) => {
         const compSeries = normalizeValueSeries(comp.nav);
         const compDates = compSeries.dates;
         const compValues = compSeries.values;
@@ -974,12 +1167,12 @@
         const alignedValues = dates.map(d => compMap[d] ?? null);
         return {
           id: `comparison-${comp.id}`,
-          name: comp.label,
+          name: getComparisonDisplayName(comp),
           data: alignedValues,
           type: "line",
           xAxisIndex: 0, yAxisIndex: 0,
           smooth: true, showSymbol: false, connectNulls: true,
-          lineStyle: { width: 1.8, color: COMP_COLORS[idx % COMP_COLORS.length], type: "dashed" }
+          lineStyle: { width: 1.8, color: COMP_COLORS[originalIndex % COMP_COLORS.length], type: "dashed" }
         };
       });
 
@@ -2336,10 +2529,48 @@ function renderBacktestNotes(result = null) {
   document.getElementById("exportImgBtn").addEventListener("click", exportScreenshot);
   document.getElementById("saveComparisonBtn").addEventListener("click", saveCurrentToComparison);
   document.getElementById("clearComparisonsBtn").addEventListener("click", clearComparisons);
+  document.getElementById("comparisonNameClose").addEventListener("click", () => closeComparisonNameModal(null));
+  document.getElementById("comparisonNameCancel").addEventListener("click", () => closeComparisonNameModal(null));
+  document.getElementById("comparisonNameConfirm").addEventListener("click", () => {
+    const input = document.getElementById("comparisonNameInput");
+    const errorEl = document.getElementById("comparisonNameError");
+    const name = sanitizeComparisonName(input.value);
+    if (!name) {
+      errorEl.textContent = "请输入名称。";
+      input.focus();
+      return;
+    }
+    closeComparisonNameModal(name);
+  });
+  document.getElementById("comparisonNameInput").addEventListener("input", () => {
+    document.getElementById("comparisonNameError").textContent = "";
+  });
+  document.getElementById("comparisonNameInput").addEventListener("keydown", event => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      document.getElementById("comparisonNameConfirm").click();
+    }
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeComparisonNameModal(null);
+    }
+  });
+  document.getElementById("comparisonNameModal").addEventListener("click", event => {
+    if (event.target.id === "comparisonNameModal") closeComparisonNameModal(null);
+  });
 
   const debouncedChartRefresh = debounce(refreshChart, 150);
   document.getElementById("benchmarkBar").addEventListener("change", event => {
     if (event.target.classList.contains("bm-check")) debouncedChartRefresh();
+  });
+  document.getElementById("comparisonBar").addEventListener("click", event => {
+    const btn = event.target.closest("[data-action]");
+    if (!btn) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const id = Number(btn.dataset.id);
+    if (btn.dataset.action === "rename-comparison") renameComparison(id);
+    if (btn.dataset.action === "remove-comparison") removeComparison(id);
   });
   document.getElementById("comparisonBar").addEventListener("change", event => {
     if (event.target.classList.contains("comp-check")) debouncedChartRefresh();

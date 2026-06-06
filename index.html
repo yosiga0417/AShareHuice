@@ -148,7 +148,7 @@
         <h2>回测结果</h2>
         <button id="exportCsvBtn" class="light sm" disabled title="导出净值数据为 CSV">↓ CSV</button>
         <button id="exportImgBtn" class="light sm" disabled title="保存图表为 PNG">↓ 截图</button>
-        <button id="saveComparisonBtn" class="light sm is-hidden" title="保存当前回测结果用于对比">⊕ 对比</button>
+        <button id="saveComparisonBtn" class="light sm is-hidden" title="保存并命名当前回测结果用于对比">⊕ 对比</button>
       </div>
       <div id="statusBar">等待执行回测。</div>
       <div class="progress-panel" id="progressPanel" data-status="queued">
@@ -211,11 +211,28 @@
 
 </div><!-- .app-shell -->
 
+<div class="modal-backdrop is-hidden" id="comparisonNameModal">
+  <div class="comparison-modal" role="dialog" aria-modal="true" aria-labelledby="comparisonNameTitle">
+    <div class="modal-head">
+      <h3 id="comparisonNameTitle">命名回测结果</h3>
+      <button id="comparisonNameClose" type="button" class="light modal-close" aria-label="关闭">×</button>
+    </div>
+    <label class="label-block" for="comparisonNameInput">名称</label>
+    <input id="comparisonNameInput" type="text" maxlength="60" autocomplete="off" />
+    <div id="comparisonNameError" class="field-error" aria-live="polite"></div>
+    <div id="comparisonNameMeta" class="comparison-name-meta"></div>
+    <div class="modal-actions">
+      <button id="comparisonNameCancel" type="button" class="light">取消</button>
+      <button id="comparisonNameConfirm" type="button">保存</button>
+    </div>
+  </div>
+</div>
+
 <!-- ── Floating action button ── -->
 <div class="fab">
   <button id="runBacktestBtn">▶&nbsp; 执行回测</button>
 </div>
 
-<script src="app.js?v=20260606"></script>
+<script src="app.js?v=20260606-name"></script>
 </body>
 </html>
