@@ -26,9 +26,14 @@
         <span class="step-badge">1</span>
         <h2>成分股导入</h2>
       </div>
-      <div class="row">
-        <input id="fileInput" type="file" accept=".xls,.xlsx,.csv" class="file-input" />
-        <button id="parseFileBtn">解析</button>
+      <div class="row file-row">
+        <input id="fileInput" type="file" accept=".xls,.xlsx,.csv" class="file-input visually-hidden" />
+        <button id="chooseFileBtn" type="button" class="light file-trigger">
+          <span class="button-icon" aria-hidden="true">↑</span>
+          <span>选择文件</span>
+        </button>
+        <span id="fileNameText" class="file-name" aria-live="polite">未选择文件</span>
+        <button id="parseFileBtn" type="button">解析</button>
       </div>
       <div class="row">
         <label>应用到</label>
@@ -211,6 +216,6 @@
   <button id="runBacktestBtn">▶&nbsp; 执行回测</button>
 </div>
 
-<script src="app.js?v=20260524"></script>
+<script src="app.js?v=20260606"></script>
 </body>
 </html>

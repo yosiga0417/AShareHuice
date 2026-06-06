@@ -205,6 +205,10 @@
     }
 
     button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 5px;
       border: 0;
       border-radius: var(--radius-sm);
       padding: 5px 11px;
@@ -213,10 +217,15 @@
       cursor: pointer;
       font-size: var(--text-base);
       white-space: nowrap;
-      transition: transform 100ms ease, opacity 100ms ease;
+      line-height: 1.35;
+      transition: transform 100ms ease, opacity 100ms ease, border-color 100ms ease, background 100ms ease;
     }
 
     button:hover { transform: translateY(-1px); opacity: 0.9; }
+    button:focus-visible {
+      outline: 2px solid var(--primary-border);
+      outline-offset: 2px;
+    }
     button.secondary { background: var(--secondary); }
     button.light { background: var(--primary-soft); color: var(--text-dark); border: 1px solid var(--primary-border); }
     button.danger { background: var(--danger-light); color: var(--danger); border: 1px solid var(--danger-border); }
@@ -1057,6 +1066,15 @@
 
     @media (max-width: 480px) {
       .params-grid { grid-template-columns: 1fr; }
+
+      .file-row {
+        flex-wrap: wrap;
+      }
+
+      .file-name {
+        flex-basis: 100%;
+        order: 3;
+      }
     }
 
     /* ── Benchmark selector bar ── */
@@ -1149,7 +1167,63 @@
       margin-top: var(--space-1);
     }
 
-    .file-input { flex: 1; min-width: 0; font-size: var(--text-base); }
+    .visually-hidden {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
+    }
+
+    .file-row {
+      flex-wrap: nowrap;
+    }
+
+    .file-row button {
+      min-height: 30px;
+    }
+
+    .file-trigger { flex: 0 0 auto; }
+
+    .button-icon {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 14px;
+      height: 14px;
+      font-size: 12px;
+      font-weight: 700;
+      line-height: 1;
+    }
+
+    .file-name {
+      flex: 1;
+      min-width: 0;
+      height: 30px;
+      display: inline-flex;
+      align-items: center;
+      padding: 5px 9px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      background: var(--surface-subtle);
+      color: var(--subtle);
+      font-size: var(--text-base);
+      line-height: 1.35;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .file-name.has-file {
+      color: var(--text);
+      background: var(--surface);
+      border-color: var(--primary-border);
+    }
+
     .select-grow { flex: 1; }
 
     .btn-clear-comparison {

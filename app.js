@@ -136,6 +136,25 @@
     return { changed: ok, total };
   }
 
+  function updateSelectedFileLabel(file) {
+    const label = document.getElementById("fileNameText");
+    if (!label) return;
+    label.textContent = file?.name || "未选择文件";
+    label.title = file?.name || "";
+    label.classList.toggle("has-file", Boolean(file));
+  }
+
+  function handleComponentFileChange(event) {
+    const file = event.target.files?.[0] || null;
+    updateSelectedFileLabel(file);
+    state.previewComponents = [];
+    document.getElementById("applyPreviewBtn").disabled = true;
+    renderPreviewTable();
+    document.getElementById("importSummary").textContent = file
+      ? `已选择 ${file.name}，点击“解析”读取成分股。`
+      : "未导入文件。解析时会强制保留6位股票代码（如 002879）。";
+  }
+
   function autoNormalizeWeights(plan, editedRowId) {
     const validRows = plan.components.filter(row => normalizeCode(row.code));
     if (validRows.length < 2) return false;
@@ -2262,6 +2281,10 @@ function renderBacktestNotes(result = null) {
   /* ────────────────────────────────────────────────
      Event listeners
   ──────────────────────────────────────────────── */
+  document.getElementById("chooseFileBtn").addEventListener("click", () => {
+    document.getElementById("fileInput").click();
+  });
+  document.getElementById("fileInput").addEventListener("change", handleComponentFileChange);
   document.getElementById("parseFileBtn").addEventListener("click", parseComponentFile);
   document.getElementById("applyPreviewBtn").addEventListener("click", applyPreviewToPlan);
   document.getElementById("runBacktestBtn").addEventListener("click", runBacktest);
