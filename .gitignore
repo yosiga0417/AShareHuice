@@ -1,2 +1,4 @@
 .cache/
 .alma-snapshots
+.DS_Store
+.kiro/
