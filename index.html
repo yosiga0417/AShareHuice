@@ -38,9 +38,9 @@
       <div class="row">
         <label>应用到</label>
         <select id="targetPlanSelect" class="select-grow"></select>
-        <button id="applyPreviewBtn" class="secondary" disabled>应用</button>
+        <button id="applyPreviewBtn" type="button" class="secondary" disabled>应用</button>
       </div>
-      <div class="hint" id="importSummary">未导入文件。解析时会强制保留6位股票代码（如 002879）。</div>
+      <div class="hint" id="importSummary">未导入文件。流程：选择文件 → 点击「解析」预览 → 选择目标计划 → 点击「应用」。解析时会强制保留6位股票代码（如 002879）。</div>
       <div id="previewWrap" class="is-hidden">
         <div class="preview-label">解析预览（前100行）</div>
         <div class="table-wrap">
@@ -63,9 +63,11 @@
       <div class="section-head">
         <span class="step-badge">2</span>
         <h2>调仓计划</h2>
-        <button id="addPlanBtn" class="light sm">＋ 新增计划</button>
-        <button id="exportPlansBtn" class="light sm" title="导出调仓计划为 JSON">↓ 导出</button>
-        <button id="importPlansBtn" class="light sm" title="从 JSON 导入调仓计划">↑ 导入</button>
+        <span class="section-head-actions">
+          <button id="addPlanBtn" type="button" class="light sm">＋ 新增计划</button>
+          <button id="exportPlansBtn" type="button" class="light sm" title="导出调仓计划为 JSON">↓ 导出</button>
+          <button id="importPlansBtn" type="button" class="light sm" title="从 JSON 导入调仓计划">↑ 导入</button>
+        </span>
         <input id="importPlansFile" type="file" accept=".json" class="is-hidden" />
       </div>
       <div id="plansContainer"></div>
@@ -101,11 +103,11 @@
           <input id="riskFreeRate" type="number" min="0" step="0.001" value="0.02" />
         </div>
       </div>
-      <div id="customDatesRow" class="is-hidden">
+      <div id="customDatesRow" class="collapsible-row">
         <label class="label-block">再平衡日期（每行一个）</label>
         <textarea id="customDates" placeholder="2024-03-15&#10;2024-06-15"></textarea>
       </div>
-      <button class="adv-toggle" id="advToggle">▸ 高级设置</button>
+      <button type="button" class="adv-toggle" id="advToggle">▸ 高级设置</button>
       <div class="adv-body" id="advBody">
         <div class="row">
           <label>后端地址</label>
@@ -144,30 +146,52 @@
   <main class="results-area">
     <div class="panel">
       <div class="section-head">
-        <span class="step-badge done">4</span>
+        <span class="step-badge output" aria-label="结果输出">✓</span>
         <h2>回测结果</h2>
-        <button id="exportCsvBtn" class="light sm" disabled title="导出净值数据为 CSV">↓ CSV</button>
-        <button id="exportImgBtn" class="light sm" disabled title="保存图表为 PNG">↓ 截图</button>
-        <button id="saveComparisonBtn" class="light sm is-hidden" title="保存并命名当前回测结果用于对比">⊕ 对比</button>
+        <span class="section-head-actions">
+          <button id="exportCsvBtn" type="button" class="light sm" disabled title="导出净值数据为 CSV">↓ CSV</button>
+          <button id="exportImgBtn" type="button" class="light sm" disabled title="保存图表为 PNG">↓ 截图</button>
+          <button id="saveComparisonBtn" type="button" class="light sm is-hidden" title="保存并命名当前回测结果用于对比">⊕ 对比</button>
+        </span>
       </div>
       <div id="statusBar">等待执行回测。</div>
       <div class="progress-panel" id="progressPanel" data-status="queued">
         <div class="progress-head">
-          <span class="progress-stage" id="progressStage">等待执行</span>
-          <span class="progress-percent" id="progressPercent">0%</span>
+          <span class="progress-stage" id="progressStage" aria-live="polite">等待执行</span>
+          <span class="progress-percent" id="progressPercent" aria-live="polite">0%</span>
         </div>
         <div class="progress-track">
-          <div class="progress-fill" id="progressFill"></div>
+          <div class="progress-fill" id="progressFill" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-label="回测进度"></div>
         </div>
         <div class="progress-meta">
-          <span id="progressDetail">尚未开始。</span>
+          <span id="progressDetail" aria-live="polite">尚未开始。</span>
           <span class="progress-elapsed" id="progressElapsed">当前耗时：0.0 秒</span>
         </div>
       </div>
       <div class="warning-box" id="warningBox"></div>
+      <div class="results-empty" id="resultsEmpty">
+        <div class="results-empty-illustration" aria-hidden="true">
+          <svg width="180" height="84" viewBox="0 0 180 84" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M6 70 L44 50 L78 58 L112 28 L150 40 L174 14" stroke="#bfdbfe" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+            <circle cx="174" cy="14" r="3.5" fill="#0057b8"/>
+            <path d="M6 78 H174" stroke="#edf2f7" stroke-width="1.5"/>
+          </svg>
+        </div>
+        <div class="results-empty-title">还没有回测结果</div>
+        <div class="results-empty-text">
+          在左侧完成<strong>成分股导入</strong>与<strong>调仓计划</strong>，设置回测参数后，点击右下角的「执行回测」即可在此查看净值曲线、绩效指标与持仓演变。
+        </div>
+        <div class="results-empty-steps">
+          <span class="results-empty-step">① 导入 / 编辑成分股</span>
+          <span class="results-empty-arrow" aria-hidden="true">→</span>
+          <span class="results-empty-step">② 设置参数</span>
+          <span class="results-empty-arrow" aria-hidden="true">→</span>
+          <span class="results-empty-step">③ 执行回测</span>
+        </div>
+      </div>
       <div class="metrics" id="metricsContainer"></div>
       <div class="benchmark-bar" id="benchmarkBar">
-        <span class="muted">对比基准：</span>
+        <span class="muted bm-section-label">对比基准（指数）：</span>
         <label class="bm-label">
           <input type="checkbox" class="bm-check" value="000300" checked />
           <span class="bm-swatch" style="background:#f59e0b;"></span>沪深300
@@ -182,9 +206,9 @@
         </label>
       </div>
       <div class="benchmark-bar is-hidden" id="comparisonBar">
-        <span class="muted">对比回测：</span>
+        <span class="muted bm-section-label">对比回测（已保存）：</span>
         <span id="comparisonCheckboxes"></span>
-        <button id="clearComparisonsBtn" class="danger btn-clear-comparison">清空对比</button>
+        <button id="clearComparisonsBtn" type="button" class="danger btn-clear-comparison">清空对比</button>
       </div>
       <div id="navChart"></div>
       <div id="holdingsChart" class="is-hidden"></div>
@@ -195,7 +219,7 @@
         </div>
       </div>
       <div id="fallbackLogSection">
-        <button id="fallbackLogToggle">▸ 兜底数据源日志 <span id="fallbackLogCount"></span></button>
+        <button type="button" id="fallbackLogToggle">▸ 兜底数据源日志 <span id="fallbackLogCount"></span></button>
         <div id="fallbackLogBody"></div>
       </div>
       <div class="report" id="reportBox"></div>
@@ -230,7 +254,7 @@
 
 <!-- ── Floating action button ── -->
 <div class="fab">
-  <button id="runBacktestBtn">▶&nbsp; 执行回测</button>
+  <button id="runBacktestBtn" type="button">▶&nbsp; 执行回测</button>
 </div>
 
 <script src="app.js?v=20260606-name"></script>

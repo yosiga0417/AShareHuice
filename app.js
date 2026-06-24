@@ -25,7 +25,9 @@
     lastResult: null,
     backtestProgress: null,
     expandedPlans: new Set(),
-    savedComparisons: []  // { id, name, label, createdAt, nav, rebalanceDates, meta }
+    savedComparisons: [],  // { id, name, label, createdAt, nav, rebalanceDates, meta }
+    activeTaskId: null,
+    cancelRequested: false
   };
 
   const metricsConfig = [
@@ -406,6 +408,7 @@
   }
 
   let comparisonNameResolver = null;
+  let lastFocusedBeforeModal = null;
 
   function closeComparisonNameModal(value = null) {
     const modal = document.getElementById("comparisonNameModal");
@@ -414,6 +417,11 @@
     const resolver = comparisonNameResolver;
     comparisonNameResolver = null;
     if (resolver) resolver(value);
+    // Return focus to the element that opened the modal.
+    if (lastFocusedBeforeModal && typeof lastFocusedBeforeModal.focus === "function") {
+      lastFocusedBeforeModal.focus();
+      lastFocusedBeforeModal = null;
+    }
   }
 
   function openComparisonNameModal({ title, defaultName, metaText, confirmText = "保存" }) {
@@ -435,6 +443,9 @@
     confirmBtn.textContent = confirmText;
     modal.classList.remove("is-hidden");
     document.body.classList.add("modal-open");
+
+    // Remember focus to restore it on close.
+    lastFocusedBeforeModal = document.activeElement;
 
     setTimeout(() => {
       input.focus();
@@ -774,6 +785,9 @@
 
   function removePlan(planId) {
     if (state.plans.length <= 1) return;
+    const plan = findPlan(planId);
+    const label = plan ? `计划（${plan.effectiveDate || "未设日期"}，${plan.components.length} 只成分股）` : "该计划";
+    if (!window.confirm(`确定删除${label}？此操作不可撤销。`)) return;
     state.plans = state.plans.filter(p => p.id !== planId);
     state.expandedPlans.delete(planId);
     renderPlans();
@@ -960,8 +974,21 @@
     }).join("");
   }
 
-  function upsertStatus(text) {
-    document.getElementById("statusBar").textContent = text;
+  function upsertStatus(text, tone = "default") {
+    const bar = document.getElementById("statusBar");
+    bar.textContent = text;
+    bar.classList.remove("tone-danger", "tone-warning");
+    if (tone === "danger") bar.classList.add("tone-danger");
+    else if (tone === "warning") bar.classList.add("tone-warning");
+  }
+
+  // Toggle the empty-state placeholder: show it only when there is no result
+  // and no in-flight backtest.
+  function syncResultsEmptyState() {
+    const hasResult = Boolean(state.lastResult && state.lastResult.nav && state.lastResult.nav.dates && state.lastResult.nav.dates.length);
+    const isRunning = Boolean(state.backtestProgress && state.backtestProgress.status === "running");
+    document.body.classList.toggle("has-result", hasResult);
+    document.body.classList.toggle("is-running", isRunning);
   }
 
   function renderBacktestProgress(task = null) {
@@ -980,6 +1007,7 @@
       fillEl.style.width = "0%";
       detailEl.textContent = "尚未开始。";
       elapsedEl.textContent = "当前耗时：0.0 秒";
+      syncResultsEmptyState();
       return;
     }
 
@@ -996,8 +1024,10 @@
     stageEl.textContent = task.stage_label || "执行中";
     percentEl.textContent = `${Math.round(pct)}%`;
     fillEl.style.width = `${pct}%`;
+    fillEl.setAttribute("aria-valuenow", String(Math.round(pct)));
     detailEl.textContent = `${task.message || "正在执行回测…"}${detailSuffix}`;
     elapsedEl.textContent = `${elapsedLabel}：${formatElapsed(task.elapsed_seconds)}`;
+    syncResultsEmptyState();
   }
 
   function updatePlanWeightBadge(planId) {
@@ -2115,6 +2145,11 @@ function renderBacktestNotes(result = null) {
 
   async function waitForBacktestTask(taskId, backend) {
     for (;;) {
+      if (state.cancelRequested) {
+        const cancelError = new Error("__CANCELLED__");
+        cancelError.cancelled = true;
+        throw cancelError;
+      }
       const resp = await fetch(`${backend}/api/backtest/tasks/${taskId}`);
       const data = await resp.json();
       if (!resp.ok) throw new Error(data.detail || "获取回测进度失败");
@@ -2176,6 +2211,7 @@ function renderBacktestNotes(result = null) {
     data = normalizeBacktestResult(data);
     state.lastResult = data;
     saveLastResult();
+    syncResultsEmptyState();
     renderMetrics(data.metrics || {}, data.comparison_metrics || []);
     renderChart(
       data.nav || [],
@@ -2202,10 +2238,42 @@ function renderBacktestNotes(result = null) {
     );
   }
 
+  function setRunButton(mode) {
+    const btn = document.getElementById("runBacktestBtn");
+    if (mode === "running") {
+      btn.disabled = false;
+      btn.dataset.mode = "running";
+      btn.innerHTML = '<span class="spinner"></span>&nbsp; 回测中…';
+      btn.setAttribute("aria-label", "取消回测");
+      btn.title = "点击取消本次回测";
+    } else if (mode === "cancelling") {
+      btn.disabled = true;
+      btn.dataset.mode = "cancelling";
+      btn.innerHTML = "正在取消…";
+      btn.removeAttribute("title");
+    } else {
+      btn.disabled = false;
+      btn.dataset.mode = "idle";
+      btn.innerHTML = "▶&nbsp; 执行回测";
+      btn.removeAttribute("title");
+      btn.setAttribute("aria-label", "执行回测");
+    }
+  }
+
   async function runBacktest() {
+    // If a backtest is in flight, this click means "cancel".
+    if (state.activeTaskId) {
+      if (!state.cancelRequested) {
+        state.cancelRequested = true;
+        setRunButton("cancelling");
+        upsertStatus("正在取消回测…");
+      }
+      return;
+    }
+
     let payload;
     try { payload = collectPayload(); } catch (error) {
-      upsertStatus(`参数错误：${error.message}`);
+      upsertStatus(`参数错误：${error.message}`, "danger");
       return;
     }
     if (!payload.start_date || !payload.end_date) {
@@ -2214,9 +2282,8 @@ function renderBacktestNotes(result = null) {
     }
 
     const backend = getBackendUrl();
-    const btn = document.getElementById("runBacktestBtn");
-    btn.disabled = true;
-    btn.innerHTML = '<span class="spinner"></span>&nbsp; 回测中…';
+    state.cancelRequested = false;
+    setRunButton("running");
 
     renderBacktestProgress({
       status: "running",
@@ -2242,6 +2309,7 @@ function renderBacktestNotes(result = null) {
       const task = await resp.json();
       if (!resp.ok) throw new Error(task.detail || "回测任务创建失败");
 
+      state.activeTaskId = task.task_id;
       const taskResult = await waitForBacktestTask(task.task_id, backend);
       if (taskResult.status !== "completed") {
         throw new Error(taskResult.error || taskResult.message || "回测失败");
@@ -2249,7 +2317,18 @@ function renderBacktestNotes(result = null) {
 
       applyBacktestResult(taskResult.result || {}, taskResult.elapsed_seconds || 0);
     } catch (error) {
-      if (!state.backtestProgress || state.backtestProgress.status === "running") {
+      if (error.cancelled) {
+        renderBacktestProgress({
+          status: "cancelled",
+          stage_label: "已取消",
+          progress_pct: state.backtestProgress?.progress_pct || 0,
+          message: "回测已取消 — 结果不会自动回填。",
+          elapsed_seconds: state.backtestProgress?.elapsed_seconds || 0,
+          current_step: 0,
+          total_steps: 0
+        });
+        upsertStatus("回测已取消。后端任务仍会继续执行至结束，但结果不会自动回填；可重新点击「执行回测」。", "warning");
+      } else if (!state.backtestProgress || state.backtestProgress.status === "running") {
         renderBacktestProgress({
           status: "failed",
           stage_label: "执行失败",
@@ -2259,11 +2338,12 @@ function renderBacktestNotes(result = null) {
           current_step: 0,
           total_steps: 0
         });
+        upsertStatus(`回测失败：${error.message}`, "danger");
       }
-      upsertStatus(`回测失败：${error.message}`);
     } finally {
-      btn.disabled = false;
-      btn.innerHTML = "▶&nbsp; 执行回测";
+      state.activeTaskId = null;
+      state.cancelRequested = false;
+      setRunButton("idle");
     }
   }
 
@@ -2431,7 +2511,7 @@ function renderBacktestNotes(result = null) {
 
     // Sync custom-dates row visibility
     if (document.getElementById("rebalanceMode").value === "custom") {
-      document.getElementById("customDatesRow").classList.remove("is-hidden");
+      document.getElementById("customDatesRow").classList.add("open");
     }
 
     state.savedComparisons = loadComparisons();
@@ -2489,7 +2569,7 @@ function renderBacktestNotes(result = null) {
   document.getElementById("importPlansFile").addEventListener("change", importPlans);
 
   document.getElementById("rebalanceMode").addEventListener("change", event => {
-    document.getElementById("customDatesRow").classList.toggle("is-hidden", event.target.value !== "custom");
+    document.getElementById("customDatesRow").classList.toggle("open", event.target.value === "custom");
     scheduleSave();
   });
 
@@ -2557,6 +2637,38 @@ function renderBacktestNotes(result = null) {
   });
   document.getElementById("comparisonNameModal").addEventListener("click", event => {
     if (event.target.id === "comparisonNameModal") closeComparisonNameModal(null);
+  });
+
+  // Global keyboard handling for the naming modal: ESC to close, Tab focus trap.
+  document.addEventListener("keydown", event => {
+    const modal = document.getElementById("comparisonNameModal");
+    if (!modal || modal.classList.contains("is-hidden")) return;
+
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeComparisonNameModal(null);
+      return;
+    }
+    if (event.key === "Tab") {
+      const focusables = Array.from(
+        modal.querySelectorAll('button, [href], input, [tabindex]:not([tabindex="-1"])')
+      ).filter(el => !el.disabled && el.offsetParent !== null);
+      if (focusables.length === 0) return;
+      const first = focusables[0];
+      const last = focusables[focusables.length - 1];
+      const active = document.activeElement;
+      if (event.shiftKey) {
+        if (active === first || !modal.contains(active)) {
+          event.preventDefault();
+          last.focus();
+        }
+      } else {
+        if (active === last) {
+          event.preventDefault();
+          first.focus();
+        }
+      }
+    }
   });
 
   const debouncedChartRefresh = debounce(refreshChart, 150);

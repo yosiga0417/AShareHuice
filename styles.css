@@ -51,13 +51,13 @@
       --shadow-lg: 0 4px 18px rgba(0, 87, 184, 0.38), 0 1px 4px rgba(0, 0, 0, 0.12);
 
       /* ── Font sizes ── */
-      --text-xs:   10px;
-      --text-sm:   11px;
-      --text-base: 12px;
-      --text-md:   13px;
-      --text-lg:   14px;
-      --text-xl:   17px;
-      --text-2xl:  20px;
+      --text-xs:   11px;
+      --text-sm:   12px;
+      --text-base: 13px;
+      --text-md:   14px;
+      --text-lg:   15px;
+      --text-xl:   18px;
+      --text-2xl:  22px;
     }
 
     * { box-sizing: border-box; }
@@ -98,8 +98,8 @@
     }
 
     #saveIndicator {
-      font-size: 11px;
-      color: var(--subtle-light);
+      font-size: var(--text-xs);
+      color: var(--subtle);
       background: var(--surface-subtle);
       padding: 3px 10px;
       border-radius: var(--radius-full);
@@ -122,7 +122,7 @@
       grid-column: 2;
       grid-row: 2;
       overflow-y: auto;
-      padding: 12px 14px 28px;
+      padding: 12px 14px 96px; /* bottom pad keeps content above the FAB */
     }
 
     /* ── Panel card ── */
@@ -139,8 +139,19 @@
     .section-head {
       display: flex;
       align-items: center;
+      flex-wrap: wrap;
       gap: 8px;
       margin-bottom: 11px;
+    }
+
+    /* Action buttons in a section head cluster on the right and wrap cleanly. */
+    /* Push any trailing action group to the right edge. */
+    .section-head .section-head-actions {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+      margin-left: auto;
     }
 
     .step-badge {
@@ -158,6 +169,15 @@
     }
 
     .step-badge.done { background: var(--subtle-light); }
+
+    /* Output badge (step 4 = sonuç): not a user step but the result panel,
+       so render it as an outline glyph rather than a filled step number. */
+    .step-badge.output {
+      background: transparent;
+      color: var(--primary);
+      border: 1.5px solid var(--primary);
+      font-size: var(--text-sm);
+    }
 
     .section-head h2 {
       margin: 0;
@@ -298,7 +318,7 @@
       transition: background 100ms;
     }
 
-    .plan-card-header:hover { background: var(--surface-subtle); }
+    .plan-card-header:hover { background: #eef2f7; }
     .plan-card-header.open { border-bottom: 1px solid var(--border); }
 
     .plan-title { font-size: var(--text-md); font-weight: 600; flex: 1; }
@@ -338,9 +358,10 @@
     /* ── Metrics grid ── */
     .metrics {
       display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
       gap: 8px;
       margin-bottom: 12px;
+      max-width: 980px;
     }
 
     .metric {
@@ -483,9 +504,71 @@
     .metric .submetric-value.negative { color: var(--danger); }
     .metric .submetric-value.warning  { color: var(--warning); }
 
+    /* ── Results empty state ── */
+    .results-empty {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      padding: 48px 24px;
+      margin-bottom: 12px;
+      border: 1px dashed var(--border);
+      border-radius: var(--radius-lg);
+      background:
+        radial-gradient(120% 80% at 50% 0%, var(--surface-subtle) 0%, var(--surface) 70%);
+      text-align: center;
+    }
+
+    .results-empty-illustration { margin-bottom: 4px; }
+
+    .results-empty-title {
+      font-size: var(--text-xl);
+      font-weight: 700;
+      color: var(--text-dark);
+    }
+
+    .results-empty-text {
+      max-width: 460px;
+      font-size: var(--text-md);
+      color: var(--subtle);
+      line-height: 1.7;
+    }
+
+    .results-empty-text strong { color: var(--text-muted); font-weight: 600; }
+
+    .results-empty-steps {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      margin-top: 6px;
+    }
+
+    .results-empty-step {
+      font-size: var(--text-sm);
+      color: var(--text-muted);
+      padding: 4px 10px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-full);
+      background: var(--surface);
+    }
+
+    .results-empty-arrow {
+      color: var(--subtle-light);
+      font-size: var(--text-sm);
+    }
+
+    /* Hide the empty-state once there is a result OR an in-flight backtest. */
+    body.has-result .results-empty,
+    body.is-running .results-empty { display: none !important; }
+
     /* ── Chart ── */
     #navChart {
-      height: 500px;
+      height: 56vh;
+      min-height: 460px;
+      max-height: 620px;
       width: 100%;
       border: 1px solid var(--border);
       border-radius: var(--radius-md);
@@ -824,6 +907,11 @@
       min-height: 18px;
     }
 
+    /* Status-bar tones for error/cancel feedback so they're not lost in the
+       default muted grey. */
+    #statusBar.tone-danger { color: var(--danger); font-weight: 600; }
+    #statusBar.tone-warning { color: var(--warning); font-weight: 600; }
+
     .progress-panel {
       display: none;
       margin-bottom: var(--space-4);
@@ -831,6 +919,18 @@
       border: 1px solid var(--border);
       border-radius: var(--radius-md);
       background: var(--surface);
+    }
+
+    /* Show the progress panel whenever a backtest is running, or once it
+       reaches a terminal state (completed/failed). Visibility is driven by
+       body.is-running (set by syncResultsEmptyState) for the in-flight case
+       and by the data-status attribute for terminal cases — both of which
+       override the base `display:none` above. */
+    body.is-running .progress-panel,
+    .progress-panel[data-status="completed"],
+    .progress-panel[data-status="failed"],
+    .progress-panel[data-status="cancelled"] {
+      display: block;
     }
 
     .progress-panel[data-status="completed"] {
@@ -841,6 +941,11 @@
     .progress-panel[data-status="failed"] {
       background: linear-gradient(180deg, #fff7f7 0%, #fff1f2 100%);
       border-color: var(--danger-border);
+    }
+
+    .progress-panel[data-status="cancelled"] {
+      background: linear-gradient(180deg, #fff8f1 0%, #fff3ea 100%);
+      border-color: var(--warning-border);
     }
 
     .progress-head,
@@ -889,6 +994,10 @@
 
     .progress-panel[data-status="failed"] .progress-fill {
       background: linear-gradient(90deg, var(--danger) 0%, #f97316 100%);
+    }
+
+    .progress-panel[data-status="cancelled"] .progress-fill {
+      background: linear-gradient(90deg, var(--warning) 0%, #f59e0b 100%);
     }
 
     .progress-meta {
@@ -1051,10 +1160,19 @@
       .results-area {
         grid-column: 1;
         grid-row: 3;
+        padding-bottom: 96px; /* keep content above the FAB on stacked layout */
       }
 
       .periodic-grid {
         grid-template-columns: 1fr;
+      }
+
+      /* FAB: centered and slightly smaller on phones for easier thumb reach */
+      .fab {
+        left: 50%;
+        right: auto;
+        bottom: 16px;
+        transform: translateX(-50%);
       }
     }
 
@@ -1074,6 +1192,11 @@
       .file-name {
         flex-basis: 100%;
         order: 3;
+      }
+
+      #runBacktestBtn {
+        font-size: var(--text-md);
+        padding: 10px 20px;
       }
     }
 
@@ -1098,6 +1221,16 @@
       cursor: pointer;
       user-select: none;
       white-space: nowrap;
+    }
+
+    /* Section label that distinguishes "对比基准" (indices) from "对比回测"
+       (saved backtests) so the two otherwise-identical bars don't blur together. */
+    .bm-section-label {
+      font-weight: 600;
+      color: var(--text-muted);
+      padding-right: 4px;
+      border-right: 1px solid var(--border);
+      margin-right: 2px;
     }
 
     .bm-swatch {
@@ -1148,6 +1281,24 @@
     }
 
     .is-hidden { display: none !important; }
+
+    /* Smoothly collapsible row (used for the custom rebalance-dates input). */
+    .collapsible-row {
+      max-height: 0;
+      opacity: 0;
+      overflow: hidden;
+      margin-bottom: 0;
+      transition: max-height 200ms ease, opacity 160ms ease, margin-bottom 200ms ease;
+    }
+    .collapsible-row.open {
+      /* large enough to fit the textarea + label; overflow reverts so long
+         lists can be edited/seen in full instead of being clipped by the
+         max-height animation ceiling. */
+      max-height: 480px;
+      opacity: 1;
+      overflow: visible;
+      margin-bottom: var(--space-2);
+    }
 
     .label-block {
       display: block;
