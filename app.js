@@ -27,6 +27,7 @@
     expandedPlans: new Set(),
     savedComparisons: [],  // { id, name, label, createdAt, nav, rebalanceDates, meta }
     activeTaskId: null,
+    backtestInFlight: false,
     cancelRequested: false
   };
 
@@ -1249,7 +1250,7 @@
         formatter(params) {
           if (!params.length) return "";
           const date = params[0].axisValue;
-          let html = `<div style="margin-bottom:4px;font-weight:600;">${date}</div>`;
+          let html = `<div style="margin-bottom:4px;font-weight:600;">${escapeHtml(date)}</div>`;
 
           // ── Rebalancing date: show holdings ──
           if (rebalanceDateSet.has(date)) {
@@ -1258,8 +1259,8 @@
             if (holdings?.length) {
               const top = holdings.slice(0, 6);
               top.forEach(h => {
-                html += `<div style="font-size:11px;color:${UI.borderLight};">${h.code}` +
-                  `${h.name ? " " + h.name : ""} ` +
+                html += `<div style="font-size:11px;color:${UI.borderLight};">${escapeHtml(h.code)}` +
+                  `${h.name ? " " + escapeHtml(h.name) : ""} ` +
                   `<b style="color:${UI.surfaceSubtle}">${Number(h.weight).toFixed(2)}%</b></div>`;
               });
               if (holdings.length > 6) {
@@ -1283,7 +1284,7 @@
               const v = Number(p.data);
               const ret = ((v - 1) * 100).toFixed(2);
               const col = v >= 1 ? UI.positive : UI.danger;
-              html += `<span style="color:${p.color}">─</span> ${p.seriesName} ` +
+              html += `<span style="color:${p.color}">─</span> ${escapeHtml(p.seriesName)} ` +
                 `<b>${v.toFixed(4)}</b> <span style="color:${col}">${ret}%</span><br/>`;
             }
           }
@@ -2262,7 +2263,7 @@ function renderBacktestNotes(result = null) {
 
   async function runBacktest() {
     // If a backtest is in flight, this click means "cancel".
-    if (state.activeTaskId) {
+    if (state.backtestInFlight) {
       if (!state.cancelRequested) {
         state.cancelRequested = true;
         setRunButton("cancelling");
@@ -2282,6 +2283,8 @@ function renderBacktestNotes(result = null) {
     }
 
     const backend = getBackendUrl();
+    state.backtestInFlight = true;
+    state.activeTaskId = null;
     state.cancelRequested = false;
     setRunButton("running");
 
@@ -2342,6 +2345,7 @@ function renderBacktestNotes(result = null) {
       }
     } finally {
       state.activeTaskId = null;
+      state.backtestInFlight = false;
       state.cancelRequested = false;
       setRunButton("idle");
     }
