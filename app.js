@@ -987,7 +987,7 @@
   // and no in-flight backtest.
   function syncResultsEmptyState() {
     const hasResult = Boolean(state.lastResult && state.lastResult.nav && state.lastResult.nav.dates && state.lastResult.nav.dates.length);
-    const isRunning = Boolean(state.backtestProgress && state.backtestProgress.status === "running");
+    const isRunning = Boolean(state.backtestProgress && ["running", "cancelling"].includes(state.backtestProgress.status));
     document.body.classList.toggle("has-result", hasResult);
     document.body.classList.toggle("is-running", isRunning);
   }
@@ -1017,7 +1017,7 @@
     const currentStep = Number(task.current_step) || 0;
     const totalSteps = Number(task.total_steps) || 0;
     const detailSuffix = totalSteps > 0 ? ` · ${currentStep}/${totalSteps}` : "";
-    const elapsedLabel = status === "running" ? "当前耗时" : "累计耗时";
+    const elapsedLabel = ["running", "cancelling"].includes(status) ? "当前耗时" : "累计耗时";
 
     panel.classList.remove("is-hidden");
     panel.dataset.status = status;
@@ -2145,18 +2145,42 @@ function renderBacktestNotes(result = null) {
   }
 
   async function waitForBacktestTask(taskId, backend) {
+    let cancelRequestAcknowledged = false;
+    let nextCancelAttemptAt = 0;
     for (;;) {
-      if (state.cancelRequested) {
-        const cancelError = new Error("__CANCELLED__");
-        cancelError.cancelled = true;
-        throw cancelError;
+      if (state.cancelRequested && !cancelRequestAcknowledged && Date.now() >= nextCancelAttemptAt) {
+        try {
+          const cancelResp = await fetch(`${backend}/api/backtest/tasks/${taskId}/cancel`, { method: "POST" });
+          if (cancelResp.ok) {
+            cancelRequestAcknowledged = true;
+          } else {
+            nextCancelAttemptAt = Date.now() + 1000;
+          }
+        } catch (e) {
+          nextCancelAttemptAt = Date.now() + 1000;
+        }
       }
+
       const resp = await fetch(`${backend}/api/backtest/tasks/${taskId}`);
       const data = await resp.json();
       if (!resp.ok) throw new Error(data.detail || "获取回测进度失败");
 
       renderBacktestProgress(data);
-      if (data.status === "completed" || data.status === "failed") return data;
+      if (data.status === "completed" || data.status === "failed" || data.status === "cancelled") {
+        if (data.status === "cancelled") {
+          const cancelError = new Error(data.message || "回测已取消");
+          cancelError.cancelled = true;
+          throw cancelError;
+        }
+        return data;
+      }
+
+      if (state.cancelRequested || data.status === "cancelling") {
+        // Wait for the worker to exit so the backend has also released its slot.
+        upsertStatus("正在取消回测…");
+        await sleep(300);
+        continue;
+      }
 
       upsertStatus(data.message || "正在执行回测并拉取行情数据，请稍候…");
       await sleep(500);
@@ -2325,13 +2349,13 @@ function renderBacktestNotes(result = null) {
           status: "cancelled",
           stage_label: "已取消",
           progress_pct: state.backtestProgress?.progress_pct || 0,
-          message: "回测已取消 — 结果不会自动回填。",
+          message: "回测已取消。",
           elapsed_seconds: state.backtestProgress?.elapsed_seconds || 0,
           current_step: 0,
           total_steps: 0
         });
-        upsertStatus("回测已取消。后端任务仍会继续执行至结束，但结果不会自动回填；可重新点击「执行回测」。", "warning");
-      } else if (!state.backtestProgress || state.backtestProgress.status === "running") {
+        upsertStatus("回测已取消。可重新点击「执行回测」。", "warning");
+      } else {
         renderBacktestProgress({
           status: "failed",
           stage_label: "执行失败",

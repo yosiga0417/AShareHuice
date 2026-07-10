@@ -692,8 +692,17 @@ def active_plan_for_date(plans: List[CleanPlan], current_date: pd.Timestamp) -> 
 
 
 def drop_unavailable_symbols(
-    plans: List[CleanPlan], close_df: pd.DataFrame
+    plans: List[CleanPlan],
+    close_df: pd.DataFrame,
+    allow_cash: bool = False,
 ) -> Tuple[List[CleanPlan], List[str]]:
+    """Drop symbols with no usable quotes and recompute weights.
+
+    Semantics:
+    - allow_cash=True: keep remaining stock weights as-is; dropped weight becomes cash
+      (together with any pre-existing cash gap under 100%).
+    - allow_cash=False: renormalize remaining stocks to exactly 100%, cash=0.
+    """
     warnings: List[str] = []
     available = {code for code in close_df.columns if close_df[code].notna().any()}
     clean: List[CleanPlan] = []
@@ -702,19 +711,19 @@ def drop_unavailable_symbols(
         filtered_components: List[Dict[str, object]] = []
         filtered_weights: Dict[str, float] = {}
         dropped: List[str] = []
-        original_total = sum(plan.weight_map.values())
 
         for component in plan.components:
             code = str(component["code"])
             if code in available:
-                filtered_components.append(component)
+                filtered_components.append(dict(component))
                 filtered_weights[code] = plan.weight_map[code]
             else:
                 dropped.append(code)
 
         if dropped:
             warnings.append(
-                f"{plan.effective_date.date()} 调仓计划中 {', '.join(dropped)} 无可用行情，已自动剔除并重归一化"
+                f"{plan.effective_date.date()} 调仓计划中 {', '.join(dropped)} 无可用行情，已自动剔除"
+                + ("，权重转入现金仓位" if allow_cash else "并重归一化")
             )
 
         if not filtered_weights:
@@ -723,9 +732,13 @@ def drop_unavailable_symbols(
                 detail=f"{plan.effective_date.date()} 调仓计划无可用成分股，无法继续回测",
             )
 
-        normalized_map, normalized_cash = normalize_weight_map(filtered_weights, decimals=4)
-        dropped_weight = original_total - sum(filtered_weights.values())
-        new_cash = max(0.0, plan.cash_weight + dropped_weight)
+        # When allow_cash, normalize_weight_map keeps the remaining equity total and
+        # sets cash = 1 - equity_total, which automatically absorbs both the original
+        # cash gap and any weight from dropped symbols.
+        # When not allow_cash, remaining equities are renormalized to 100%.
+        normalized_map, new_cash = normalize_weight_map(
+            filtered_weights, decimals=4, allow_cash=allow_cash
+        )
         for component in filtered_components:
             code = str(component["code"])
             component["weight"] = round(normalized_map[code] * 100, 4)
@@ -760,6 +773,7 @@ def align_plan_dates_to_trading_days(
                 effective_date=first_trade_day,
                 components=plans[0].components,
                 weight_map=plans[0].weight_map,
+                cash_weight=plans[0].cash_weight,
             )
         )
 
@@ -782,6 +796,7 @@ def align_plan_dates_to_trading_days(
             effective_date=mapped_day,
             components=plan.components,
             weight_map=plan.weight_map,
+            cash_weight=plan.cash_weight,
         )
 
     aligned.extend(mapped.values())

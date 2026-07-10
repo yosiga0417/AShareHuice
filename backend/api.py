@@ -84,7 +84,13 @@ BACKTEST_STAGE_LABELS = {
     "finalize": "整理结果",
     "completed": "已完成",
     "failed": "执行失败",
+    "cancelling": "正在取消",
+    "cancelled": "已取消",
 }
+
+
+class BacktestCancelled(Exception):
+    """Raised when a running backtest task receives a cancel request."""
 
 
 def prune_backtest_tasks() -> None:
@@ -108,6 +114,32 @@ def create_backtest_task() -> BacktestTaskState:
     return task
 
 
+def is_backtest_cancel_requested(task_id: Optional[str]) -> bool:
+    if not task_id:
+        return False
+    with BACKTEST_TASKS_LOCK:
+        task = BACKTEST_TASKS.get(task_id)
+        return bool(task and task.cancel_requested)
+
+
+def request_backtest_cancel(task_id: str) -> BacktestTaskState:
+    prune_backtest_tasks()
+    with BACKTEST_TASKS_LOCK:
+        task = BACKTEST_TASKS.get(task_id)
+        if task is None:
+            raise HTTPException(status_code=404, detail="未找到对应的回测任务")
+        if task.status in {"completed", "failed", "cancelled"}:
+            return task
+        if task.cancel_requested:
+            return task
+        task.cancel_requested = True
+        task.status = "cancelling"
+        task.stage = "cancelling"
+        task.message = "已收到取消请求，正在等待当前操作结束。"
+        task.updated_monotonic = time.monotonic()
+        return task
+
+
 def update_backtest_task(
     task_id: str,
     *,
@@ -125,6 +157,28 @@ def update_backtest_task(
         task = BACKTEST_TASKS.get(task_id)
         if task is None:
             return
+        # A requested cancellation remains in progress until the worker exits. This
+        # keeps task status, elapsed time, and the concurrency slot consistent.
+        if task.cancel_requested:
+            if status in {"cancelled", "failed"}:
+                task.status = "cancelled"
+                task.stage = "cancelled"
+                if progress is not None:
+                    task.progress = max(0.0, min(1.0, float(progress)))
+                if message is not None:
+                    task.message = message
+                if current_step is not None or total_steps is not None:
+                    task.current_step = current_step
+                    task.total_steps = total_steps
+                if error is not None:
+                    task.error = error
+                task.updated_monotonic = now
+                task.finished_monotonic = now
+            elif task.status != "cancelled":
+                task.status = "cancelling"
+                task.stage = "cancelling"
+                task.updated_monotonic = now
+            return
         if status is not None:
             task.status = status
         if progress is not None:
@@ -141,7 +195,7 @@ def update_backtest_task(
         if error is not None:
             task.error = error
         task.updated_monotonic = now
-        if task.status in {"completed", "failed"}:
+        if task.status in {"completed", "failed", "cancelled"}:
             task.finished_monotonic = now
 
 
@@ -165,6 +219,7 @@ def get_backtest_task_payload(task_id: str) -> Dict[str, object]:
             "elapsed_seconds": round(elapsed_seconds, 1),
             "current_step": task.current_step,
             "total_steps": task.total_steps,
+            "cancel_requested": task.cancel_requested,
         }
         if task.result is not None:
             payload["result"] = task.result
@@ -405,7 +460,12 @@ def build_clean_plans(plans: List[RebalancePlanInput], allow_cash: bool = False)
 def execute_backtest(
     request: BacktestRequest,
     progress_callback: Optional[ProgressCallback] = None,
+    task_id: Optional[str] = None,
 ) -> Dict[str, object]:
+    def ensure_not_cancelled() -> None:
+        if is_backtest_cancel_requested(task_id):
+            raise BacktestCancelled("回测已取消")
+
     def report(
         progress: float,
         stage: str,
@@ -413,6 +473,7 @@ def execute_backtest(
         current_step: Optional[int] = None,
         total_steps: Optional[int] = None,
     ) -> None:
+        ensure_not_cancelled()
         if progress_callback is None:
             return
         progress_callback(progress, stage, message, current_step, total_steps)
@@ -437,14 +498,18 @@ def execute_backtest(
         fraction = 1.0 if total <= 0 else done / total
         report(0.05 + 0.65 * fraction, "fetch_prices", message, done, total)
 
+    ensure_not_cancelled()
     close_df, data_warnings = fetch_close_prices(
         all_symbols, request.start_date, request.end_date,
         progress_callback=on_symbol_progress,
     )
     warnings.extend(data_warnings)
+    ensure_not_cancelled()
 
     report(0.74, "align_plans", "正在剔除无有效行情的成分股…")
-    filtered_plans, plan_warnings = drop_unavailable_symbols(plans, close_df)
+    filtered_plans, plan_warnings = drop_unavailable_symbols(
+        plans, close_df, allow_cash=request.allow_cash
+    )
     warnings.extend(plan_warnings)
 
     trading_dates = close_df.index
@@ -474,6 +539,7 @@ def execute_backtest(
                 code_names[code] = name
 
     nav_data = prepare_nav_data(close_df)
+    ensure_not_cancelled()
 
     # ── Build comparison rebalance date sets ──
     comparison_modes = build_comparison_rebalance_modes(request.rebalance_mode)
@@ -502,6 +568,7 @@ def execute_backtest(
             code = str(series_item.get("code", ""))
             series_item["name"] = code_names.get(code, code)
 
+    ensure_not_cancelled()
     metrics = compute_metrics(nav_series, request.risk_free_rate)
     periodic_returns = compute_periodic_returns(nav_series)
     comparison_metrics = [
@@ -526,12 +593,14 @@ def execute_backtest(
         fraction = 1.0 if total <= 0 else done / total
         report(0.90 + 0.08 * fraction, "fetch_benchmarks", message, done, total)
 
+    ensure_not_cancelled()
     benchmark_nav, benchmark_warnings = fetch_benchmark_navs(
         benchmark_fetch_codes, requested_benchmark_codes,
         request.start_date, request.end_date,
         progress_callback=on_benchmark_progress,
     )
     warnings.extend(benchmark_warnings)
+    ensure_not_cancelled()
 
     report(0.99, "finalize", "正在整理回测结果…")
 
@@ -594,24 +663,49 @@ def run_backtest_task(task_id: str, request: BacktestRequest) -> None:
     )
 
     try:
-        result = execute_backtest(request, progress_callback=on_progress)
+        if is_backtest_cancel_requested(task_id):
+            raise BacktestCancelled("回测已取消")
+        result = execute_backtest(request, progress_callback=on_progress, task_id=task_id)
+    except BacktestCancelled:
+        update_backtest_task(
+            task_id, status="cancelled", stage="cancelled",
+            message="回测已取消。", current_step=0, total_steps=0, error="cancelled",
+        )
     except HTTPException as exc:
-        error = str(exc.detail)
-        update_backtest_task(
-            task_id, status="failed", stage="failed",
-            message=f"回测失败：{error}", current_step=0, total_steps=0, error=error,
-        )
+        if is_backtest_cancel_requested(task_id):
+            update_backtest_task(
+                task_id, status="cancelled", stage="cancelled",
+                message="回测已取消。", current_step=0, total_steps=0, error="cancelled",
+            )
+        else:
+            error = str(exc.detail)
+            update_backtest_task(
+                task_id, status="failed", stage="failed",
+                message=f"回测失败：{error}", current_step=0, total_steps=0, error=error,
+            )
     except Exception as exc:
-        error = str(exc)
-        update_backtest_task(
-            task_id, status="failed", stage="failed",
-            message=f"回测失败：{error}", current_step=0, total_steps=0, error=error,
-        )
+        if is_backtest_cancel_requested(task_id):
+            update_backtest_task(
+                task_id, status="cancelled", stage="cancelled",
+                message="回测已取消。", current_step=0, total_steps=0, error="cancelled",
+            )
+        else:
+            error = str(exc)
+            update_backtest_task(
+                task_id, status="failed", stage="failed",
+                message=f"回测失败：{error}", current_step=0, total_steps=0, error=error,
+            )
     else:
-        update_backtest_task(
-            task_id, status="completed", progress=1.0, stage="completed",
-            message="回测完成。", current_step=0, total_steps=0, result=result, error=None,
-        )
+        if is_backtest_cancel_requested(task_id):
+            update_backtest_task(
+                task_id, status="cancelled", stage="cancelled",
+                message="回测已取消。", current_step=0, total_steps=0, error="cancelled",
+            )
+        else:
+            update_backtest_task(
+                task_id, status="completed", progress=1.0, stage="completed",
+                message="回测完成。", current_step=0, total_steps=0, result=result, error=None,
+            )
     finally:
         with ACTIVE_TASK_COUNT_LOCK:
             ACTIVE_TASK_COUNT = max(0, ACTIVE_TASK_COUNT - 1)
@@ -712,4 +806,10 @@ def create_backtest_task_api(request: BacktestRequest) -> Dict[str, str]:
 
 @app.get("/api/backtest/tasks/{task_id}")
 def get_backtest_task_api(task_id: str) -> Dict[str, object]:
+    return get_backtest_task_payload(task_id)
+
+
+@app.post("/api/backtest/tasks/{task_id}/cancel")
+def cancel_backtest_task_api(task_id: str) -> Dict[str, object]:
+    request_backtest_cancel(task_id)
     return get_backtest_task_payload(task_id)

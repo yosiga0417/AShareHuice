@@ -278,11 +278,12 @@ def fetch_close_prices(
     results: Dict[str, Tuple[pd.Series, str]] = {}
     errors: Dict[str, str] = {}
     completed = 0
-    with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="stock-fetch") as executor:
-        future_to_symbol = {
-            executor.submit(fetch_symbol_close_series, symbol, start_date, end_date): symbol
-            for symbol in symbols
-        }
+    executor = ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="stock-fetch")
+    future_to_symbol = {
+        executor.submit(fetch_symbol_close_series, symbol, start_date, end_date): symbol
+        for symbol in symbols
+    }
+    try:
         for future in as_completed(future_to_symbol):
             symbol = future_to_symbol[future]
             try:
@@ -295,6 +296,15 @@ def fetch_close_prices(
                     completed, total_symbols,
                     f"已处理成分股 {symbol}（{completed}/{total_symbols}）",
                 )
+    except BaseException:
+        # Running network calls cannot be force-stopped, but queued calls do not
+        # need to start once the enclosing backtest has been cancelled.
+        for future in future_to_symbol:
+            future.cancel()
+        executor.shutdown(wait=True)
+        raise
+    else:
+        executor.shutdown(wait=True)
     for symbol in symbols:
         if symbol in errors:
             warnings.append(f"{symbol} 行情获取失败: {errors[symbol]}")
@@ -430,10 +440,11 @@ def fetch_benchmark_navs(
     results: Dict[str, Dict[str, object]] = {}
     errors: Dict[str, str] = {}
     completed = 0
-    with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="benchmark-fetch") as executor:
-        future_to_code = {
-            executor.submit(fetch_benchmark_nav, code, start_date, end_date): code for code in codes
-        }
+    executor = ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="benchmark-fetch")
+    future_to_code = {
+        executor.submit(fetch_benchmark_nav, code, start_date, end_date): code for code in codes
+    }
+    try:
         for future in as_completed(future_to_code):
             code = future_to_code[future]
             try:
@@ -446,6 +457,13 @@ def fetch_benchmark_navs(
                     completed, total_codes,
                     f"已处理基准 {code}（{completed}/{total_codes}）",
                 )
+    except BaseException:
+        for future in future_to_code:
+            future.cancel()
+        executor.shutdown(wait=True)
+        raise
+    else:
+        executor.shutdown(wait=True)
     for code in codes:
         if code in errors:
             warning_prefix = "基准" if code in requested_codes else "预载基准"

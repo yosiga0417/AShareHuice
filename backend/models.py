@@ -115,7 +115,7 @@ StageProgressCallback = Callable[[int, int, str], None]
 @dataclass
 class BacktestTaskState:
     task_id: str
-    status: Literal["queued", "running", "completed", "failed"] = "queued"
+    status: Literal["queued", "running", "cancelling", "completed", "failed", "cancelled"] = "queued"
     progress: float = 0.0
     stage: str = "queued"
     message: str = "任务已创建，等待执行。"
@@ -126,3 +126,4 @@ class BacktestTaskState:
     finished_monotonic: Optional[float] = None
     result: Optional[Dict[str, object]] = None
     error: Optional[str] = None
+    cancel_requested: bool = False

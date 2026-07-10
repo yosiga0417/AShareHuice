@@ -123,6 +123,7 @@ python3 backend.py
 | `POST` | `/api/backtest` | 同步执行回测（JSON 请求体） |
 | `POST` | `/api/backtest/tasks` | 创建异步回测任务，返回 `task_id` |
 | `GET` | `/api/backtest/tasks/{task_id}` | 获取异步任务状态、进度、耗时和结果 |
+| `POST` | `/api/backtest/tasks/{task_id}/cancel` | 取消异步回测任务 |
 
 ### 异步任务轮询示例
 ```javascript

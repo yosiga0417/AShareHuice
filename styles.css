@@ -1013,15 +1013,20 @@
     }
 
     .warning-box {
-      border: 1px solid var(--border);
+      border: 1px solid var(--warning-border);
       border-radius: var(--radius-sm);
-      background: var(--surface-subtle);
+      background: var(--warning-light);
       padding: 7px 11px;
-      color: var(--subtle);
+      color: var(--warning);
       font-size: var(--text-base);
       display: none;
       line-height: 1.6;
       margin-bottom: var(--space-4);
+      white-space: pre-wrap;
+    }
+
+    .warning-box:not(.is-hidden) {
+      display: block;
     }
 
     /* ── Fallback source log ── */
