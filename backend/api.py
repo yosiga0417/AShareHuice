@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from io import BytesIO
+import logging
 import threading
 import time
 from typing import Callable, Dict, List, Optional, Tuple, Union
@@ -11,6 +13,7 @@ from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
 
+from backend.cache import migrate_legacy_csv_cache
 from backend.config import read_positive_int_env
 from backend.engine import (
     align_plan_dates_to_trading_days,
@@ -54,10 +57,26 @@ from backend.models import (
 
 
 
+logger = logging.getLogger("backend.api")
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    # One-time cleanup of stale pre-Feather CSV cache files (best effort).
+    try:
+        summary = migrate_legacy_csv_cache()
+        if any(summary.values()):
+            logger.info("缓存迁移完成: %s", summary)
+    except Exception as exc:  # pragma: no cover - startup must never block serving
+        logger.warning("缓存迁移失败: %s", exc)
+    yield
+
+
 app = FastAPI(
     title="A股自设指数回测服务",
     description="基于 AKShare 的 A 股成分股指数回测与分析服务",
     version="1.0.0",
+    lifespan=lifespan,
 )
 
 app.add_middleware(
@@ -586,7 +605,6 @@ def execute_backtest(
         "values": [float(round(v, 8)) for v in nav_series.values],
     }
 
-    requested_benchmark_codes = set(request.benchmarks)
     benchmark_fetch_codes = build_benchmark_fetch_codes(request.benchmarks)
 
     def on_benchmark_progress(done: int, total: int, message: str) -> None:
@@ -595,7 +613,7 @@ def execute_backtest(
 
     ensure_not_cancelled()
     benchmark_nav, benchmark_warnings = fetch_benchmark_navs(
-        benchmark_fetch_codes, requested_benchmark_codes,
+        benchmark_fetch_codes,
         request.start_date, request.end_date,
         progress_callback=on_benchmark_progress,
     )
@@ -785,7 +803,44 @@ async def parse_components(file: UploadFile = File(...)) -> Dict[str, object]:
 
 @app.post("/api/backtest")
 def run_backtest(request: BacktestRequest) -> Dict[str, object]:
-    return execute_backtest(request)
+    # The sync endpoint shares the same concurrency accounting as async tasks,
+    # so it can no longer bypass the limit (or get one stuck fetching forever).
+    global ACTIVE_TASK_COUNT
+    with ACTIVE_TASK_COUNT_LOCK:
+        if ACTIVE_TASK_COUNT >= MAX_CONCURRENT_TASKS:
+            raise HTTPException(
+                status_code=429,
+                detail=f"已有 {ACTIVE_TASK_COUNT} 个回测任务正在执行，请等待某个完成后再提交（并发上限 {MAX_CONCURRENT_TASKS}）。",
+            )
+        ACTIVE_TASK_COUNT += 1
+    try:
+        return execute_backtest(request)
+    finally:
+        with ACTIVE_TASK_COUNT_LOCK:
+            ACTIVE_TASK_COUNT = max(0, ACTIVE_TASK_COUNT - 1)
+
+
+@app.get("/api/backtest/tasks")
+def list_backtest_tasks_api() -> Dict[str, object]:
+    prune_backtest_tasks()
+    with BACKTEST_TASKS_LOCK:
+        tasks = []
+        for task in BACKTEST_TASKS.values():
+            elapsed_seconds = max(
+                0.0,
+                (task.finished_monotonic or time.monotonic()) - task.started_monotonic,
+            )
+            tasks.append({
+                "task_id": task.task_id,
+                "status": task.status,
+                "stage": task.stage,
+                "stage_label": BACKTEST_STAGE_LABELS.get(task.stage, task.stage),
+                "message": task.message,
+                "progress_pct": round(task.progress * 100, 1),
+                "elapsed_seconds": round(elapsed_seconds, 1),
+            })
+    tasks.sort(key=lambda item: item["elapsed_seconds"], reverse=True)
+    return {"tasks": tasks}
 
 
 @app.post("/api/backtest/tasks")

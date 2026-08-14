@@ -307,6 +307,73 @@ def save_cached_benchmark_ranges(code: str, ranges: Iterable[Tuple[date, date]])
     save_cached_ranges(benchmark_cache_meta_file(code), ranges)
 
 
+def _read_legacy_csv(csv_path: Path) -> pd.Series:
+    """Parse the pre-Feather per-symbol CSV format (date,close)."""
+    df = pd.read_csv(csv_path)
+    date_col = "date" if "date" in df.columns else ("日期" if "日期" in df.columns else None)
+    close_col = "close" if "close" in df.columns else ("收盘" if "收盘" in df.columns else None)
+    if date_col is None or close_col is None:
+        raise ValueError(f"无法识别旧版 CSV 列: {csv_path.name}")
+    series = pd.Series(
+        pd.to_numeric(df[close_col], errors="coerce").to_numpy(dtype="float64"),
+        index=pd.to_datetime(df[date_col], errors="coerce"),
+    )
+    return normalize_price_series(series)
+
+
+def migrate_legacy_csv_cache() -> Dict[str, int]:
+    """Convert/remove stale per-symbol CSV caches left by older versions.
+
+    Older builds stored close prices as ``{symbol}.csv``; the current format is
+    Feather. When both exist, the Feather data wins and the CSV is deleted.
+    When only a CSV exists, it is converted to Feather (best effort) so no data
+    is lost. Orphan metadata files without a matching data file are removed.
+
+    Returns a summary dict of counters (converted / removed / skipped / meta_removed).
+    """
+    summary: Dict[str, int] = {"converted": 0, "removed": 0, "skipped": 0, "meta_removed": 0}
+    namespaces = (
+        (STOCK_CACHE_DIR, stock_cache_file, STOCK_META_DIR, save_cached_stock_series, save_cached_stock_ranges),
+        (BENCHMARK_CACHE_DIR, benchmark_cache_file, BENCHMARK_META_DIR, save_cached_benchmark_series, save_cached_benchmark_ranges),
+    )
+    for cache_dir, data_file_fn, meta_dir, save_series, save_ranges in namespaces:
+        # Clean orphan metadata first, even when the data directory itself is
+        # missing (a data file cannot exist there, so every metadata file is
+        # orphaned by definition).
+        if meta_dir.exists():
+            for meta_path in meta_dir.glob("*.json"):
+                symbol = meta_path.stem
+                if not data_file_fn(symbol).exists():
+                    meta_path.unlink()
+                    summary["meta_removed"] += 1
+        if not cache_dir.exists():
+            continue
+        for csv_path in cache_dir.glob("*.csv"):
+            symbol = csv_path.stem
+            try:
+                feather_path = data_file_fn(symbol)
+                if feather_path.exists() and len(load_cached_series(feather_path)) > 0:
+                    # A readable Feather wins; the legacy CSV is redundant.
+                    csv_path.unlink()
+                    summary["removed"] += 1
+                    continue
+                series = _read_legacy_csv(csv_path)
+                if len(series) == 0:
+                    csv_path.unlink()
+                    summary["removed"] += 1
+                    continue
+                # Either no Feather exists or it is corrupt/unreadable: convert
+                # the legacy CSV (overwriting a corrupt Feather) so the only
+                # usable data is not thrown away.
+                save_series(symbol, series)
+                save_ranges(symbol, [(series.index.min().date(), series.index.max().date())])
+                csv_path.unlink()
+                summary["converted"] += 1
+            except Exception:
+                summary["skipped"] += 1
+    return summary
+
+
 def compute_missing_ranges(
     start_date: date,
     end_date: date,

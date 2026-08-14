@@ -8,7 +8,7 @@ from typing import Callable, Dict, List, Literal, Optional, Tuple
 
 import numpy as np
 import pandas as pd
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, ValidationInfo, field_validator
 
 getcontext().prec = 28
 
@@ -62,7 +62,8 @@ class RebalancePlanInput(BaseModel):
     effective_date: date
     components: List[ComponentInput]
 
-    @validator("components")
+    @field_validator("components")
+    @classmethod
     def validate_components_not_empty(cls, value: List[ComponentInput]) -> List[ComponentInput]:
         if not value:
             raise ValueError("调仓计划的成分股不能为空")
@@ -83,20 +84,19 @@ class BacktestRequest(BaseModel):
     slippage_rate: float = 0.0
     allow_cash: bool = False
 
-    @validator("end_date")
-    def validate_date_range(cls, end_date: date, values: Dict[str, object]) -> date:
-        start_date = values.get("start_date")
+    @field_validator("end_date")
+    @classmethod
+    def validate_date_range(cls, end_date: date, info: ValidationInfo) -> date:
+        start_date = info.data.get("start_date")
         if start_date is not None and end_date <= start_date:
             raise ValueError("回测结束日期必须晚于开始日期")
         return end_date
 
-    @validator("plans")
+    @field_validator("plans")
+    @classmethod
     def validate_plans_not_empty(cls, value: List[RebalancePlanInput]) -> List[RebalancePlanInput]:
         if not value:
             raise ValueError("至少需要一条调仓计划")
-        invalid_dates = [p.effective_date for p in value if not p.effective_date]
-        if invalid_dates:
-            raise ValueError("部分调仓计划未设置生效日期")
         return value
 
 

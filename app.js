@@ -15,6 +15,10 @@
   const STORAGE_KEY = "a_stock_backtest_v1";
   const COMPARISON_STORAGE_KEY = "a_stock_backtest_comparisons_v1";
   const LAST_RESULT_KEY = "a_stock_backtest_last_result_v1";
+  // Per-tab task tracking: sessionStorage survives a refresh (so a running
+  // task can be resumed after reloading the page) but is NOT shared across
+  // tabs — a second tab must never cancel or overwrite the first tab's task.
+  const ACTIVE_TASK_KEY = "a_stock_backtest_active_task_v1";
 
   const state = {
     plans: [],
@@ -28,7 +32,9 @@
     savedComparisons: [],  // { id, name, label, createdAt, nav, rebalanceDates, meta }
     activeTaskId: null,
     backtestInFlight: false,
-    cancelRequested: false
+    cancelRequested: false,
+    resolvingStaleTask: false,
+    selectedComponentFile: null
   };
 
   const metricsConfig = [
@@ -149,6 +155,10 @@
 
   function handleComponentFileChange(event) {
     const file = event.target.files?.[0] || null;
+    // Keep the File in state: the input is cleared below so re-selecting the
+    // SAME file still fires `change`, but parsing reads from state (reading
+    // event.target.files[0] right after clearing would always be null).
+    state.selectedComponentFile = file;
     updateSelectedFileLabel(file);
     state.previewComponents = [];
     document.getElementById("applyPreviewBtn").disabled = true;
@@ -156,6 +166,8 @@
     document.getElementById("importSummary").textContent = file
       ? `已选择 ${file.name}，点击“解析”读取成分股。`
       : "未导入文件。解析时会强制保留6位股票代码（如 002879）。";
+    // Clear the input so re-selecting the SAME file still fires `change`.
+    event.target.value = "";
   }
 
   function autoNormalizeWeights(plan, editedRowId) {
@@ -2101,7 +2113,7 @@ function renderBacktestNotes(result = null) {
      Actions
   ──────────────────────────────────────────────── */
   async function parseComponentFile() {
-    const file = document.getElementById("fileInput").files[0];
+    const file = state.selectedComponentFile;
     if (!file) { upsertStatus("请先选择 xls/xlsx/csv 文件。"); return; }
 
     const backend = getBackendUrl();
@@ -2147,6 +2159,7 @@ function renderBacktestNotes(result = null) {
   async function waitForBacktestTask(taskId, backend) {
     let cancelRequestAcknowledged = false;
     let nextCancelAttemptAt = 0;
+    let consecutiveNetworkErrors = 0;
     for (;;) {
       if (state.cancelRequested && !cancelRequestAcknowledged && Date.now() >= nextCancelAttemptAt) {
         try {
@@ -2161,9 +2174,33 @@ function renderBacktestNotes(result = null) {
         }
       }
 
-      const resp = await fetch(`${backend}/api/backtest/tasks/${taskId}`);
-      const data = await resp.json();
-      if (!resp.ok) throw new Error(data.detail || "获取回测进度失败");
+      let data;
+      try {
+        const resp = await fetch(`${backend}/api/backtest/tasks/${taskId}`);
+        if (!resp.ok) {
+          const body = await resp.json().catch(() => ({}));
+          throw new Error(body.detail || "获取回测进度失败");
+        }
+        data = await resp.json();
+        consecutiveNetworkErrors = 0;
+      } catch (error) {
+        // Transient network failure: retry with backoff instead of reporting a
+        // bogus "回测失败". The backend task keeps running in the meantime.
+        consecutiveNetworkErrors += 1;
+        if (consecutiveNetworkErrors >= 5) {
+          // Connection seems gone for good: best-effort cancel so the backend
+          // releases its concurrency slot, then surface a distinct error.
+          try {
+            await fetch(`${backend}/api/backtest/tasks/${taskId}/cancel`, { method: "POST" });
+          } catch (_) { /* best effort */ }
+          const networkError = new Error("与后端连接中断，无法继续获取回测进度（已尝试取消任务）。请检查后端服务是否仍在运行。");
+          networkError.network = true;
+          throw networkError;
+        }
+        upsertStatus(`与后端连接中断，正在重试（${consecutiveNetworkErrors}/5）…`);
+        await sleep(500 * consecutiveNetworkErrors);
+        continue;
+      }
 
       renderBacktestProgress(data);
       if (data.status === "completed" || data.status === "failed" || data.status === "cancelled") {
@@ -2184,6 +2221,71 @@ function renderBacktestNotes(result = null) {
 
       upsertStatus(data.message || "正在执行回测并拉取行情数据，请稍候…");
       await sleep(500);
+    }
+  }
+
+  async function resumeActiveBacktestTask() {
+    // After a page reload, pick up a still-running backtest task so it neither
+    // becomes an orphan (holding a backend slot) nor is silently forgotten.
+    let taskId = null;
+    try { taskId = sessionStorage.getItem(ACTIVE_TASK_KEY); } catch (_) { return; }
+    if (!taskId) return;
+    // Lock the run state BEFORE the first await: while the status fetch is in
+    // flight the button would otherwise still look idle and a click could
+    // start a second backtest that races this one over the shared state.
+    state.backtestInFlight = true;
+    state.activeTaskId = taskId;
+    state.cancelRequested = false;
+    setRunButton("running");
+    const backend = getBackendUrl();
+    try {
+      const resp = await fetch(`${backend}/api/backtest/tasks/${taskId}`);
+      if (!resp.ok) {
+        if (resp.status === 404) {
+          // Task no longer exists (e.g. backend restarted and cleared its
+          // memory) — nothing left to recover, so the key can be dropped.
+          clearActiveTaskKey(taskId);
+          upsertStatus("上次回测任务已失效（后端可能已重启），请重新执行回测。", "warning");
+        } else {
+          // Backend unreachable/erroring: the task may still be running,
+          // keep the key so a later refresh can retry recovery.
+          upsertStatus(`恢复上次回测任务失败（HTTP ${resp.status}），可稍后刷新重试。`, "warning");
+        }
+        return;
+      }
+      const task = await resp.json();
+      if (task.status === "completed") {
+        clearActiveTaskKey(taskId);
+        if (task.result) applyBacktestResult(task.result, task.elapsed_seconds || 0);
+        return;
+      }
+      if (task.status === "failed" || task.status === "cancelled") {
+        clearActiveTaskKey(taskId);
+        upsertStatus(`上次回测任务已结束：${task.message || task.status}`, "warning");
+        return;
+      }
+      // Still running: resume polling so the user can watch or cancel it.
+      upsertStatus("已恢复上次进行中的回测任务，正在继续跟踪进度…");
+      const taskResult = await waitForBacktestTask(taskId, backend);
+      clearActiveTaskKey(taskId);  // terminal status returned
+      if (taskResult.status !== "completed") {
+        throw new Error(taskResult.error || taskResult.message || "回测失败");
+      }
+      applyBacktestResult(taskResult.result || {}, taskResult.elapsed_seconds || 0);
+    } catch (error) {
+      if (error.cancelled) {
+        clearActiveTaskKey(taskId);
+        upsertStatus("回测已取消。", "warning");
+      } else if (!error.network) {
+        upsertStatus(`恢复上次回测任务失败：${error.message}`, "warning");
+      }
+      // error.network: connection is gone but the task may still be running
+      // server-side — keep the key so it can be recovered after a refresh.
+    } finally {
+      state.activeTaskId = null;
+      state.backtestInFlight = false;
+      state.cancelRequested = false;
+      setRunButton("idle");
     }
   }
 
@@ -2285,6 +2387,119 @@ function renderBacktestNotes(result = null) {
     }
   }
 
+  function clearActiveTaskKey(expectedTaskId) {
+    // Compare-and-remove: only drop the key if it still refers to our own
+    // task (guards against in-tab races where the key was overwritten).
+    try {
+      const current = sessionStorage.getItem(ACTIVE_TASK_KEY);
+      if (expectedTaskId === undefined || current === expectedTaskId) {
+        sessionStorage.removeItem(ACTIVE_TASK_KEY);
+      }
+    } catch (_) {}
+  }
+
+  // Poll budget while waiting for a cancelled task to actually finish: the
+  // backend only marks it "cancelling" and the worker releases its concurrency
+  // slot once it reaches a cancellation checkpoint, so we must not start a new
+  // task (nor drop the key) before then. 100 x 300ms = 30s.
+  const STALE_CANCEL_POLL_LIMIT = 100;
+
+  async function resolveStaleTaskKey() {
+    // Resolve what the (per-tab) task key refers to before starting a new
+    // task, so a still-running task is not silently orphaned and a result
+    // that finished while we were offline is not thrown away.
+    // Returns {action: "proceed" | "restored" | "blocked", message?}.
+    let taskId = null;
+    try { taskId = sessionStorage.getItem(ACTIVE_TASK_KEY); } catch (_) { return { action: "proceed" }; }
+    if (!taskId) return { action: "proceed" };
+    const backend = getBackendUrl();
+    try {
+      const resp = await fetch(`${backend}/api/backtest/tasks/${taskId}`);
+      if (resp.status === 404) {
+        clearActiveTaskKey(taskId);  // task is gone — nothing to protect
+        return { action: "proceed" };
+      }
+      if (!resp.ok) {
+        // Backend up but erroring: the task state is unknown, refuse to
+        // overwrite the key.
+        return { action: "blocked", message: "无法确认上次任务状态（后端异常），任务 ID 已保留，可刷新页面重试。" };
+      }
+      const task = await resp.json();
+      // A task that reached "completed" while we could not see it must have
+      // its result restored instead of being discarded and re-run.
+      const restoreCompleted = (completedTask) => {
+        clearActiveTaskKey(taskId);
+        if (completedTask.result) {
+          try {
+            applyBacktestResult(completedTask.result, completedTask.elapsed_seconds || 0);
+          } catch (_) {
+            // Rendering a malformed result must not block starting a new run.
+          }
+        }
+        return { action: "restored" };
+      };
+      if (task.status === "completed") {
+        return restoreCompleted(task);
+      }
+      if (task.status === "failed" || task.status === "cancelled") {
+        clearActiveTaskKey(taskId);
+        return { action: "proceed" };
+      }
+      // Still running (or cancelling): ask the backend to cancel it, then
+      // wait until it really reaches a terminal state (and releases its
+      // concurrency slot) before clearing the key and letting a new task
+      // start — otherwise the new task would 429 and the old one would be
+      // unrecoverable.
+      let cancelResp;
+      try {
+        cancelResp = await fetch(`${backend}/api/backtest/tasks/${taskId}/cancel`, { method: "POST" });
+      } catch (_) {
+        return { action: "blocked", message: "无法送达取消请求（后端不可达），任务 ID 已保留，可刷新页面恢复。" };
+      }
+      if (cancelResp.status === 404) {
+        // The task vanished while we were looking at it — nothing to protect.
+        clearActiveTaskKey(taskId);
+        return { action: "proceed" };
+      }
+      if (!cancelResp.ok) {
+        return { action: "blocked", message: `取消上次任务失败（HTTP ${cancelResp.status}），任务 ID 已保留，可刷新页面重试。` };
+      }
+      upsertStatus("正在等待上次任务取消完成…");
+      for (let attempt = 0; attempt < STALE_CANCEL_POLL_LIMIT; attempt++) {
+        let pollResp;
+        try {
+          pollResp = await fetch(`${backend}/api/backtest/tasks/${taskId}`);
+        } catch (_) {
+          return { action: "blocked", message: "等待上次任务取消时与后端失去连接，任务 ID 已保留，可刷新页面继续跟踪。" };
+        }
+        if (pollResp.status === 404) {
+          clearActiveTaskKey(taskId);
+          return { action: "proceed" };
+        }
+        if (!pollResp.ok) {
+          return { action: "blocked", message: "等待上次任务取消时后端异常，任务 ID 已保留。" };
+        }
+        const pollTask = await pollResp.json();
+        if (pollTask.status === "cancelled" || pollTask.status === "failed") {
+          clearActiveTaskKey(taskId);
+          return { action: "proceed" };
+        }
+        if (pollTask.status === "completed") {
+          // The worker finished before reaching a cancellation checkpoint:
+          // its result exists, restore it instead of discarding it.
+          return restoreCompleted(pollTask);
+        }
+        await sleep(300);
+      }
+      // Cancel is still in progress: do NOT clear the key and do NOT start a
+      // new task (its creation would 429 until the slot is released).
+      return { action: "blocked", message: "上次任务取消超时（仍在收尾），请稍后重试，或刷新页面继续跟踪。" };
+    } catch (error) {
+      // Backend unreachable: cannot confirm the old task's state.
+      return { action: "blocked", message: "无法确认上次任务状态（后端不可达），任务 ID 已保留，可刷新页面重试。" };
+    }
+  }
+
   async function runBacktest() {
     // If a backtest is in flight, this click means "cancel".
     if (state.backtestInFlight) {
@@ -2303,6 +2518,31 @@ function renderBacktestNotes(result = null) {
     }
     if (!payload.start_date || !payload.end_date) {
       upsertStatus("请先填写回测开始与结束日期。");
+      return;
+    }
+
+    // A task key left over from a network failure may still point at a running
+    // task. Resolve it before starting a new one so it is not silently
+    // orphaned by overwriting the key. Guard against double-clicks while this
+    // network round-trip is in flight.
+    if (state.resolvingStaleTask) return;
+    state.resolvingStaleTask = true;
+    let staleResolution = { action: "proceed" };
+    try {
+      staleResolution = await resolveStaleTaskKey();
+    } finally {
+      state.resolvingStaleTask = false;
+    }
+    if (staleResolution.action === "restored") {
+      // A task that completed while we were offline was just restored — this
+      // click is done, do not start a fresh run.
+      return;
+    }
+    if (staleResolution.action === "blocked") {
+      upsertStatus(
+        staleResolution.message || "上次回测任务状态未知，无法开始新任务。",
+        "danger"
+      );
       return;
     }
 
@@ -2337,7 +2577,12 @@ function renderBacktestNotes(result = null) {
       if (!resp.ok) throw new Error(task.detail || "回测任务创建失败");
 
       state.activeTaskId = task.task_id;
+      try { sessionStorage.setItem(ACTIVE_TASK_KEY, task.task_id); } catch (_) {}
+      // waitForBacktestTask only returns once the task reached a terminal
+      // status (completed/failed); "cancelled" throws with error.cancelled.
+      // Either way the key is then safe to drop.
       const taskResult = await waitForBacktestTask(task.task_id, backend);
+      clearActiveTaskKey(task.task_id);
       if (taskResult.status !== "completed") {
         throw new Error(taskResult.error || taskResult.message || "回测失败");
       }
@@ -2345,6 +2590,8 @@ function renderBacktestNotes(result = null) {
       applyBacktestResult(taskResult.result || {}, taskResult.elapsed_seconds || 0);
     } catch (error) {
       if (error.cancelled) {
+        // Backend confirmed the task is cancelled — terminal, drop the key.
+        clearActiveTaskKey(state.activeTaskId);
         renderBacktestProgress({
           status: "cancelled",
           stage_label: "已取消",
@@ -2577,13 +2824,27 @@ function renderBacktestNotes(result = null) {
     }
     renderComparisonBar();
     renderBacktestProgress(null);
+
+    // If a backtest was in flight when the page was closed/reloaded, resume it.
+    resumeActiveBacktestTask();
   }
 
   /* ────────────────────────────────────────────────
      Event listeners
   ──────────────────────────────────────────────── */
-  document.getElementById("chooseFileBtn").addEventListener("click", () => {
-    document.getElementById("fileInput").click();
+  // File-picker triggers are <label for=...> elements: the browser opens the
+  // native dialog directly, without JS. Here we only add keyboard support
+  // (Enter/Space) and keep the change handlers wired up.
+  ["chooseFileBtn", "importPlansBtn"].forEach(id => {
+    const labelEl = document.getElementById(id);
+    labelEl.addEventListener("keydown", event => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        const targetId = labelEl.getAttribute("for");
+        const inputEl = targetId && document.getElementById(targetId);
+        if (inputEl) inputEl.click();
+      }
+    });
   });
   document.getElementById("fileInput").addEventListener("change", handleComponentFileChange);
   document.getElementById("parseFileBtn").addEventListener("click", parseComponentFile);
@@ -2591,9 +2852,6 @@ function renderBacktestNotes(result = null) {
   document.getElementById("runBacktestBtn").addEventListener("click", runBacktest);
   document.getElementById("addPlanBtn").addEventListener("click", () => addPlan(true));
   document.getElementById("exportPlansBtn").addEventListener("click", exportPlans);
-  document.getElementById("importPlansBtn").addEventListener("click", () => {
-    document.getElementById("importPlansFile").click();
-  });
   document.getElementById("importPlansFile").addEventListener("change", importPlans);
 
   document.getElementById("rebalanceMode").addEventListener("change", event => {

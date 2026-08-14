@@ -3,8 +3,9 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, time as dt_time, timedelta
 import os
+import threading
 import time
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Iterable, List, Optional, Set, Tuple
 from zoneinfo import ZoneInfo
 
 import akshare as ak
@@ -34,6 +35,29 @@ from backend.cache import (
 from backend.config import read_positive_int_env
 DEFAULT_FETCH_WORKERS = min(12, max(4, (os.cpu_count() or 4) * 2))
 
+# AKShare prints tqdm progress bars to stderr that spam logs. Force-disable them
+# by patching tqdm's __init__: akshare uses tqdm both directly and via its own
+# get_tqdm() wrapper, and (as of tqdm 4.67) there is no env var to disable it.
+def _silence_tqdm_progress_bars() -> None:
+    if getattr(_silence_tqdm_progress_bars, "_applied", False):
+        return
+    try:
+        import tqdm as _tqdm
+
+        _orig_init = _tqdm.tqdm.__init__
+
+        def _disabled_init(self, iterable=None, *args, **kwargs):
+            kwargs["disable"] = True
+            _orig_init(self, iterable, *args, **kwargs)
+
+        _tqdm.tqdm.__init__ = _disabled_init
+        _silence_tqdm_progress_bars._applied = True
+    except Exception:  # pragma: no cover - purely cosmetic, never fatal
+        pass
+
+
+_silence_tqdm_progress_bars()
+
 from backend.models import DEFAULT_BENCHMARK_CODES, StageProgressCallback
 FETCH_WORKER_LIMIT = read_positive_int_env("BACKTEST_FETCH_WORKERS", DEFAULT_FETCH_WORKERS)
 INTRADAY_QUOTE_TTL_SECONDS = read_positive_int_env("BACKTEST_INTRADAY_QUOTE_TTL_SECONDS", 120)
@@ -42,9 +66,88 @@ CHINA_TZ = ZoneInfo("Asia/Shanghai")
 MARKET_OPEN_TIME = dt_time(9, 30)
 MARKET_STABLE_CLOSE_TIME = dt_time(15, 5)
 
+# A-share trading calendar, lazily fetched from AKShare and TTL-cached.
+# Used to avoid firing per-symbol "today" quote requests on exchange holidays
+# (weekday-only heuristics would otherwise treat 春节/国庆 etc. as trading days).
+TRADE_CALENDAR_STATE: Dict[str, object] = {"fetched_at": 0.0, "days": None, "loading": False}
+TRADE_CALENDAR_LOCK = threading.Lock()
+# Condition over the same lock so threads that arrive while a fetch is in
+# flight wait for its result instead of racing ahead to the weekday fallback.
+TRADE_CALENDAR_CONDITION = threading.Condition(TRADE_CALENDAR_LOCK)
+TRADE_CALENDAR_TTL_SECONDS = 6 * 3600
+# Safety net for threads waiting on a concurrent calendar fetch: if the
+# fetching thread hangs on the network call and never notifies, waiting
+# threads give up after this long and fall back to the weekday heuristic
+# instead of blocking the whole symbol fetch forever.
+TRADE_CALENDAR_WAIT_TIMEOUT_SECONDS = 30.0
+
 
 def get_china_now() -> datetime:
     return datetime.now(CHINA_TZ)
+
+
+def load_trade_calendar() -> Optional[Set[date]]:
+    """Return the set of A-share trading days (lazily fetched, TTL-cached).
+
+    Returns None when the calendar cannot be fetched; callers then fall back to
+    the weekday-only heuristic. While another thread is mid-fetch (e.g. the
+    first load racing many worker threads), callers block on the condition
+    variable and use the fetch result instead of falling back prematurely —
+    otherwise most threads would treat an exchange holiday as a trading day
+    and fire pointless "today" quote requests.
+    """
+    now = time.monotonic()
+    with TRADE_CALENDAR_CONDITION:
+        state = TRADE_CALENDAR_STATE
+        # Fresh within TTL — either a successful fetch (days cached) or a
+        # recent failed attempt (cooldown, fall back to the weekday heuristic
+        # instead of hammering AKShare on every symbol). fetched_at == 0.0
+        # means no attempt has been made yet, so always fetch then (a bare
+        # monotonic clock can be < TTL right after boot).
+        if state["fetched_at"] and now - float(state["fetched_at"]) < TRADE_CALENDAR_TTL_SECONDS:
+            return state["days"]
+        if state["loading"]:
+            # Another thread is fetching (likely the first load): wait for it
+            # to finish, then use its result (success or failure) instead of
+            # immediately falling back to the weekday-only heuristic. The
+            # timeout is a safety net if the fetching thread hangs on the
+            # network call and never notifies.
+            TRADE_CALENDAR_CONDITION.wait(timeout=TRADE_CALENDAR_WAIT_TIMEOUT_SECONDS)
+            return state["days"]
+        state["loading"] = True
+    try:
+        df = ak.tool_trade_date_hist_sina()
+        if df is None or df.empty:
+            raise ValueError("交易日历为空")
+        col = "trade_date" if "trade_date" in df.columns else str(df.columns[0])
+        days = set(pd.to_datetime(df[col], errors="coerce").dropna().dt.date)
+        if not days:
+            raise ValueError("交易日历解析为空")
+        with TRADE_CALENDAR_CONDITION:
+            TRADE_CALENDAR_STATE["days"] = days
+            TRADE_CALENDAR_STATE["fetched_at"] = now
+            TRADE_CALENDAR_CONDITION.notify_all()
+        return days
+    except Exception:
+        # Cooldown before retrying, even on failure, so a flaky calendar source
+        # does not turn every symbol fetch into a calendar fetch.
+        with TRADE_CALENDAR_CONDITION:
+            TRADE_CALENDAR_STATE["fetched_at"] = now
+            TRADE_CALENDAR_CONDITION.notify_all()
+        return None
+    finally:
+        with TRADE_CALENDAR_CONDITION:
+            TRADE_CALENDAR_STATE["loading"] = False
+            TRADE_CALENDAR_CONDITION.notify_all()
+
+
+def is_trading_day(day: date) -> bool:
+    if not is_trading_weekday(day):
+        return False
+    calendar = load_trade_calendar()
+    if calendar is None:
+        return True  # calendar unavailable: fall back to weekday heuristic
+    return day in calendar
 
 
 def is_trading_weekday(day: date) -> bool:
@@ -52,11 +155,11 @@ def is_trading_weekday(day: date) -> bool:
 
 
 def should_refresh_today_quote(now: datetime) -> bool:
-    return is_trading_weekday(now.date()) and now.time() >= MARKET_OPEN_TIME
+    return is_trading_day(now.date()) and now.time() >= MARKET_OPEN_TIME
 
 
 def should_persist_today_quote(now: datetime) -> bool:
-    return is_trading_weekday(now.date()) and now.time() >= MARKET_STABLE_CLOSE_TIME
+    return is_trading_day(now.date()) and now.time() >= MARKET_STABLE_CLOSE_TIME
 
 
 def today_quote_ttl_seconds(now: datetime) -> int:
@@ -424,7 +527,6 @@ def fetch_benchmark_nav(
 
 def fetch_benchmark_navs(
     codes: List[str],
-    requested_codes: set[str],
     start_date: date,
     end_date: date,
     progress_callback: Optional[StageProgressCallback] = None,
@@ -466,20 +568,28 @@ def fetch_benchmark_navs(
         executor.shutdown(wait=True)
     for code in codes:
         if code in errors:
-            warning_prefix = "基准" if code in requested_codes else "预载基准"
-            warnings.append(f"{warning_prefix} {code} 行情获取失败: {errors[code]}")
+            warnings.append(f"基准 {code} 行情获取失败: {errors[code]}")
             continue
         benchmark_nav[code] = results[code]
     return benchmark_nav, warnings
 
 
 def build_benchmark_fetch_codes(requested_codes: Iterable[str]) -> List[str]:
+    """Return benchmark codes to fetch.
+
+    Fetches exactly what the user requested; only when nothing was requested do
+    we fall back to the default benchmark set. Previously the defaults were
+    always fetched (and discarded by the frontend when unselected), wasting
+    three index data pulls on every backtest.
+    """
     ordered_codes: List[str] = []
     seen: set[str] = set()
-    for raw_code in [*DEFAULT_BENCHMARK_CODES, *requested_codes]:
+    for raw_code in requested_codes:
         code = str(raw_code).strip()
         if not code or code in seen:
             continue
         seen.add(code)
         ordered_codes.append(code)
+    if not ordered_codes:
+        ordered_codes = list(DEFAULT_BENCHMARK_CODES)
     return ordered_codes

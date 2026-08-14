@@ -28,10 +28,10 @@
       </div>
       <div class="row file-row">
         <input id="fileInput" type="file" accept=".xls,.xlsx,.csv" class="file-input visually-hidden" />
-        <button id="chooseFileBtn" type="button" class="light file-trigger">
+        <label id="chooseFileBtn" for="fileInput" class="light file-trigger" role="button" tabindex="0" aria-label="选择成分股文件">
           <span class="button-icon" aria-hidden="true">↑</span>
           <span>选择文件</span>
-        </button>
+        </label>
         <span id="fileNameText" class="file-name" aria-live="polite">未选择文件</span>
         <button id="parseFileBtn" type="button">解析</button>
       </div>
@@ -66,9 +66,9 @@
         <span class="section-head-actions">
           <button id="addPlanBtn" type="button" class="light sm">＋ 新增计划</button>
           <button id="exportPlansBtn" type="button" class="light sm" title="导出调仓计划为 JSON">↓ 导出</button>
-          <button id="importPlansBtn" type="button" class="light sm" title="从 JSON 导入调仓计划">↑ 导入</button>
+          <label id="importPlansBtn" for="importPlansFile" class="light sm" role="button" tabindex="0" title="从 JSON 导入调仓计划">↑ 导入</label>
         </span>
-        <input id="importPlansFile" type="file" accept=".json" class="is-hidden" />
+        <input id="importPlansFile" type="file" accept=".json" class="visually-hidden" />
       </div>
       <div id="plansContainer"></div>
     </div>
@@ -257,6 +257,6 @@
   <button id="runBacktestBtn" type="button">▶&nbsp; 执行回测</button>
 </div>
 
-<script src="app.js?v=20260606-name"></script>
+<script src="app.js?v=20260710-filefix"></script>
 </body>
 </html>

@@ -251,6 +251,33 @@
     button.danger { background: var(--danger-light); color: var(--danger); border: 1px solid var(--danger-border); }
     button:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
 
+    /* File-picker triggers rendered as <label for=...> so the native dialog
+       opens via the browser even when app.js fails to load (stale cache,
+       script error, CDN blockage). Styles mirror the <button> rules above. */
+    label[role="button"] {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 5px;
+      border: 0;
+      border-radius: var(--radius-sm);
+      padding: 5px 11px;
+      background: var(--primary);
+      color: var(--surface);
+      cursor: pointer;
+      font-size: var(--text-base);
+      white-space: nowrap;
+      line-height: 1.35;
+      transition: transform 100ms ease, opacity 100ms ease, border-color 100ms ease, background 100ms ease;
+    }
+    label[role="button"]:hover { transform: translateY(-1px); opacity: 0.9; }
+    label[role="button"]:focus-visible {
+      outline: 2px solid var(--primary-border);
+      outline-offset: 2px;
+    }
+    label[role="button"].light { background: var(--primary-soft); color: var(--text-dark); border: 1px solid var(--primary-border); }
+    label[role="button"].sm { font-size: var(--text-sm); padding: 3px 7px; }
+
     /* ── Table ── */
     .table-wrap {
       overflow: auto;
