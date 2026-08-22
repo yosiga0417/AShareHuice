@@ -37,6 +37,34 @@
     selectedComponentFile: null
   };
 
+  /* ── 图表配色随主题切换（界面层，不触碰业务逻辑） ── */
+  const UI_THEMES = {
+    dark: {
+      primary: '#3b82f6', positive: '#34d399', danger: '#fb7185', warning: '#fbbf24',
+      subtle: '#94a3b8', subtleLight: '#64748b',
+      text: '#e6edf6', textDark: '#f8fafc', textMuted: '#b9c6d6',
+      surface: 'rgba(17,24,41,.58)', surfaceSubtle: 'rgba(17,24,41,.42)',
+      border: 'rgba(148,163,184,.14)', borderLight: 'rgba(148,163,184,.10)',
+      tooltipBg: 'rgba(10,17,32,.97)', tooltipText: '#e6edf6', trackBg: 'rgba(148,163,184,.18)'
+    },
+    light: {
+      primary: '#0057b8', positive: '#0f766e', danger: '#b91c1c', warning: '#c2410c',
+      subtle: '#64748b', subtleLight: '#94a3b8',
+      text: '#1e293b', textDark: '#0f172a', textMuted: '#334155',
+      surface: '#ffffff', surfaceSubtle: '#f8fafc',
+      border: '#dbe4ef', borderLight: '#e2e8f0',
+      tooltipBg: '#0f172a', tooltipText: '#f8fafc', trackBg: '#dbe7f5'
+    }
+  };
+  /* 把当前主题的图表色板写入 UI，并重绘已有图表 */
+  window.__btApplyTheme = function (theme) {
+    const p = UI_THEMES[theme] || UI_THEMES.dark;
+    Object.keys(p).forEach(k => { UI[k] = p[k]; });
+    try {
+      if (state && state.lastResult && typeof refreshChart === 'function') refreshChart();
+    } catch (e) { /* 无结果时忽略 */ }
+  };
+
   const metricsConfig = [
     ["total_return",           "区间总收益",    "pct"],
     ["annual_return",          "年化收益率",    "pct"],
@@ -164,10 +192,12 @@
     document.getElementById("applyPreviewBtn").disabled = true;
     renderPreviewTable();
     document.getElementById("importSummary").textContent = file
-      ? `已选择 ${file.name}，点击“解析”读取成分股。`
-      : "未导入文件。解析时会强制保留6位股票代码（如 002879）。";
+      ? `已选择 ${file.name}，正在自动解析…`
+      : "未导入文件。选择文件后会自动解析，解析时会强制保留6位股票代码（如 002879）。";
     // Clear the input so re-selecting the SAME file still fires `change`.
     event.target.value = "";
+    // 自动解析：一旦选中文件就立即解析预览，无需再点击「解析」。
+    if (file) parseComponentFile();
   }
 
   function autoNormalizeWeights(plan, editedRowId) {
@@ -947,7 +977,7 @@
                data-action="toggle-plan" data-plan-id="${plan.id}">
             <span class="plan-title">计划 ${index + 1}&nbsp;·&nbsp;${plan.effectiveDate || "未设日期"}</span>
             <span class="${sumClass}" data-role="weight-sum" data-plan-id="${plan.id}">${total.toFixed(2)}%</span>
-            <span class="chevron ${isOpen ? "open" : ""}">▾</span>
+            <svg class="icon chevron ${isOpen ? "open" : ""}" aria-hidden="true"><use href="#i-chevron-down"/></svg>
           </div>
           <div class="plan-card-body ${isOpen ? "open" : ""}">
             <div class="row" style="margin-bottom:var(--space-3);">
@@ -971,7 +1001,7 @@
                 <thead>
                   <tr>
                     <th class="col-code">代码</th>
-                    <th>名称</th>
+                    <th class="col-name">名称</th>
                     <th class="col-weight">权重(%)</th>
                     <th class="col-action"></th>
                   </tr>
@@ -1109,7 +1139,7 @@
     count.textContent = `(${logs.length} 条)`;
     // Collapsed by default
     body.classList.remove("open");
-    toggle.childNodes[0].textContent = "▸ 兜底数据源日志 ";
+    toggle.classList.remove("open");
   }
 
   function formatMetric(value, mode) {
@@ -1296,7 +1326,7 @@
               const v = Number(p.data);
               const ret = ((v - 1) * 100).toFixed(2);
               const col = v >= 1 ? UI.positive : UI.danger;
-              html += `<span style="color:${p.color}">─</span> ${escapeHtml(p.seriesName)} ` +
+              html += `<span style="color:${p.color};display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:5px;"></span> ${escapeHtml(p.seriesName)} ` +
                 `<b>${v.toFixed(4)}</b> <span style="color:${col}">${ret}%</span><br/>`;
             }
           }
@@ -2124,6 +2154,8 @@ function renderBacktestNotes(result = null) {
       const resp = await fetch(`${backend}/api/parse-components`, { method: "POST", body: formData });
       const data = await resp.json();
       if (!resp.ok) throw new Error(data.detail || "成分股文件解析失败");
+      // 若在解析期间用户又选择了别的文件，丢弃这条过期结果，避免覆盖。
+      if (state.selectedComponentFile !== file) return;
       state.previewComponents = (data.components || []).map(item =>
         makeRow(item.code, item.name, item.weight)
       );
@@ -2847,7 +2879,6 @@ function renderBacktestNotes(result = null) {
     });
   });
   document.getElementById("fileInput").addEventListener("change", handleComponentFileChange);
-  document.getElementById("parseFileBtn").addEventListener("click", parseComponentFile);
   document.getElementById("applyPreviewBtn").addEventListener("click", applyPreviewToPlan);
   document.getElementById("runBacktestBtn").addEventListener("click", runBacktest);
   document.getElementById("addPlanBtn").addEventListener("click", () => addPlan(true));
@@ -2880,15 +2911,14 @@ function renderBacktestNotes(result = null) {
     const body = document.getElementById("advBody");
     const btn = document.getElementById("advToggle");
     const isOpen = body.classList.toggle("open");
-    btn.textContent = (isOpen ? "▾" : "▸") + " 高级设置";
+    btn.classList.toggle("open", isOpen);
   });
 
   document.getElementById("fallbackLogToggle").addEventListener("click", () => {
     const body = document.getElementById("fallbackLogBody");
     const count = document.getElementById("fallbackLogCount");
     const isOpen = body.classList.toggle("open");
-    document.getElementById("fallbackLogToggle").childNodes[0].textContent =
-      (isOpen ? "▾" : "▸") + " 兜底数据源日志 ";
+    document.getElementById("fallbackLogToggle").classList.toggle("open", isOpen);
   });
 
   document.getElementById("exportCsvBtn").addEventListener("click", exportCsv);
