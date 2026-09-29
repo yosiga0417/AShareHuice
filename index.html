@@ -462,6 +462,56 @@
     return out;
   }
 
+  /* 底部时间轴滑条 + 框内滚轮/拖拽缩放，样式与「持仓演变」一致。
+     区间不写进 option（ECharts 重建时会重置），由 app.js 的
+     syncNavChartZoom() 在重绘后统一回填。 */
+  function buildDataZoom() {
+    // 复用 app.js 的主题调色板（app.js 未加载时退回浅色默认值）
+    var pal = (typeof UI !== 'undefined')
+      ? UI
+      : { surface: '#ffffff', surfaceSubtle: '#f8fafc', borderLight: '#e2e8f0', subtleLight: '#94a3b8', primary: '#0057b8' };
+    return [
+      {
+        type: 'inside',
+        xAxisIndex: [0],
+        filterMode: 'filter',
+        minSpan: 5,
+        zoomOnMouseWheel: true,
+        moveOnMouseMove: true
+      },
+      {
+        type: 'slider',
+        xAxisIndex: [0],
+        filterMode: 'filter',
+        height: 18,
+        left: 54,
+        right: 18,
+        bottom: 14,
+        showDetail: false,
+        brushSelect: false,
+        borderColor: 'transparent',
+        backgroundColor: pal.surfaceSubtle,
+        fillerColor: 'rgba(37,99,235,0.16)',
+        handleSize: '80%',
+        handleStyle: { color: pal.surface, borderColor: pal.subtleLight, borderWidth: 1 },
+        moveHandleStyle: { color: pal.primary },
+        dataBackground: {
+          lineStyle: { color: pal.borderLight },
+          areaStyle: { color: pal.borderLight }
+        },
+        selectedDataBackground: {
+          lineStyle: { color: pal.primary },
+          areaStyle: { color: 'rgba(37,99,235,0.14)' }
+        }
+      }
+    ];
+  }
+
+  /* 视图整体替换后，把用户选定的时间轴区间回填回来 */
+  function restoreZoom() {
+    if (typeof syncNavChartZoom === 'function') syncNavChartZoom();
+  }
+
   /* 单窗格视图（回撤 / 超额收益）：用全新 option 整体替换，避免合并歧义 */
   function buildSingleOption(dates, series, yFmt, tooltipFmt) {
     return {
@@ -484,7 +534,8 @@
           return html;
         }
       },
-      grid: { top: 26, left: 54, right: 18, bottom: 30 },
+      grid: { top: 26, left: 54, right: 18, bottom: 64 },
+      dataZoom: buildDataZoom(),
       xAxis: {
         type: 'category', data: dates,
         axisLabel: { color: '#64748b', fontSize: 11 },
@@ -522,6 +573,7 @@
         function (v) { return (v * 100).toFixed(1) + '%'; },
         function (v) { return (v * 100).toFixed(2) + '%'; }
       ), { notMerge: true });
+      restoreZoom();
       setViewHint('');
       return;
     }
@@ -548,6 +600,7 @@
         function (v) { return ((v - 1) * 100).toFixed(1) + '%'; },
         function (v) { return ((v - 1) * 100).toFixed(2) + '%'; }
       ), { notMerge: true });
+      restoreZoom();
       setViewHint(excess ? '' : '超额收益视图需要至少勾选一个对比基准（上方「基准」）。');
       return;
     }
@@ -593,6 +646,35 @@
 </script>
 
 <script src="app.js?v=20260710-filefix"></script>
+
+<script>
+/* ════════════════════════════════════════════════════════════════
+   后端地址自动跟随：页面由后端直接提供时（http://127.0.0.1:8000/），
+   "后端地址"取当前访问地址，换端口启动（./start.sh --port 8010）
+   也无需手动改设置。仅覆盖本机地址，自定义的远端地址保持不动。
+   直接双击 index.html（file://）时不做任何修改。
+   ════════════════════════════════════════════════════════════════ */
+(function () {
+  if (location.protocol !== 'http:' && location.protocol !== 'https:') return;
+  var el = document.getElementById('backendUrl');
+  if (!el) return;
+  var origin = location.origin;
+  var current = (el.value || '').trim().replace(/\/+$/, '');
+  if (!/^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/i.test(current)) return;
+  if (current === origin) return;
+  // 普通静态服务器也能提供此页面，只有本项目后端才声明提供前端资源。
+  fetch(origin + '/api/health')
+    .then(function (resp) { return resp.ok ? resp.json() : null; })
+    .then(function (data) {
+      if (!data || data.status !== 'ok' || data.frontend_served !== true) return;
+      // 请求期间用户可能手动修改了地址，保留其选择。
+      if ((el.value || '').trim().replace(/\/+$/, '') !== current) return;
+      el.value = origin;
+      el.dispatchEvent(new Event('change'));
+    })
+    .catch(function () { /* 当前页面可能来自普通静态服务器 */ });
+})();
+</script>
 
 <script>
 /* ════════════════════════════════════════════════════════════════
@@ -757,6 +839,7 @@
       .finally(function () { if (timer) clearTimeout(timer); });
   }
   checkBackend();
+  document.getElementById('backendUrl').addEventListener('change', checkBackend);
   setInterval(checkBackend, 60000);
 
   /* ── 运行坞：脏状态 + 上次运行 ──

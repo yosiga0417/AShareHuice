@@ -57,6 +57,9 @@
 - 回撤区域图（净值曲线下方阴影标注回撤）。
 - 持仓演变堆积面积图（按日展示前 15 大重仓股占比变化）。
 - 多模式净值曲线对比。
+- 时间轴缩放：净值/回撤/超额收益与持仓演变图底部都有时间轴滑条，可拖动选段或
+  用滚轮在框内缩放；三种净值视图共用同一选段，切换视图、增减基准或对比回测时
+  保持不放，重新跑一次回测则回到全区间。
 
 ### 数据导出
 - 导出净值 + 基准数据为 UTF-8 BOM CSV 文件。
@@ -82,21 +85,42 @@
 
 ## 本地运行
 
-### 1. 安装依赖
+### 一键启动（推荐）
+
+```bash
+./start.sh
+```
+
+脚本会自动完成：检查 Python → 缺少依赖时自动 `pip install -r requirements.txt`
+（必要时创建 `.venv`）→ 启动后端 → 等待服务就绪 → 打开浏览器
+`http://127.0.0.1:8000/`。停止服务：在窗口里按 `Ctrl+C`，或直接关闭窗口。
+
+- macOS：也可以在 Finder 里双击 `start.command`。
+- Windows：双击 `start.bat`。
+
+可用参数：
+
+| 命令 | 说明 |
+|------|------|
+| `./start.sh` | 启动并打开 `http://127.0.0.1:8000/` |
+| `./start.sh --port 8010` | 换端口启动（页面里的「后端地址」会自动跟随） |
+| `./start.sh --file` | 仍然打开本地 `index.html`（保留 `file://` 下的既有本地存档） |
+| `./start.sh --no-open` | 只启动服务，不打开浏览器 |
+| `./start.sh --help` | 查看帮助 |
+
+> 页面通过后端直接提供，因此不再需要手动打开 `index.html`。
+> 注意：浏览器按来源（origin）隔离本地存储，`http://127.0.0.1:8000` 与
+> `file://` 下的调仓计划/参数互不相通。若想沿用旧的 `file://` 存档，
+> 先用 `./start.sh --file` 打开旧页面，导出调仓计划 JSON，再在默认模式下导入。
+
+### 手动启动（等价做法）
+
 ```bash
 pip install -r requirements.txt
+python3 backend.py          # 或: python -m backend
 ```
-
-### 2. 启动后端服务
-```bash
-python3 backend.py
-# 或: python -m backend
-```
-服务默认地址：`http://127.0.0.1:8000`
-
-### 3. 打开前端页面
-- 直接双击打开 `index.html`，或通过任意静态服务器打开。
-- 页面中后端地址保持默认 `http://127.0.0.1:8000`。
+服务默认地址：`http://127.0.0.1:8000`，浏览器直接访问该地址即可打开页面
+（也可继续双击 `index.html`，页面中后端地址保持默认 `http://127.0.0.1:8000`）。
 
 > 前端图表库 ECharts 已本地化到 `vendor/echarts.min.js`（v5.6.0，Apache-2.0），
 > 无需外网 CDN，离线可用。升级方式：从 https://www.jsdelivr.com/package/npm/echarts
@@ -129,6 +153,7 @@ python3 backend.py
 | `GET` | `/api/backtest/tasks` | 列出全部回测任务（含状态、进度、耗时） |
 | `GET` | `/api/backtest/tasks/{task_id}` | 获取异步任务状态、进度、耗时和结果 |
 | `POST` | `/api/backtest/tasks/{task_id}/cancel` | 取消异步回测任务 |
+| `GET` | `/`（及 `/index.html`、`/app.js`、`/styles.css`、`/vendor/*`） | 提供前端页面与静态资源；仅暴露这几项，`backend/` 源码与 `.cache/` 数据不可访问 |
 
 ### 异步任务轮询示例
 ```javascript

@@ -571,13 +571,18 @@ body.is-running .progress-panel,
 }
 .warning-box:not(.is-hidden) { display: block; }
 
-/* ── 结果标签页 ── */
+/* ── 结果标签页 ──
+   这是纯导航，不是内容区：绝不能成为滚动容器。
+   一旦出现 overflow:auto，标签的 margin-bottom:-1px（用于让选中下划线压住分割线）
+   会被算作 1px 溢出，从而在标签栏内冒出一条竖向滚动条（看起来像侧边栏）。
+   窄屏时改为换行，而不是横向滚动。 */
 .results-tabs {
   display: flex;
+  flex-wrap: wrap;
   gap: 2px;
   border-bottom: 1px solid var(--glass-border);
   margin-bottom: 13px;
-  overflow-x: auto;
+  overflow: visible;
 }
 .results-tab {
   position: relative;
@@ -1623,6 +1628,8 @@ th.col-action { width: 40px; }
   .file-row { flex-wrap: wrap; }
   .file-name { flex-basis: 100%; order: 3; }
   .metric { flex: 1 1 46%; min-width: 0; }
+  /* 窄屏优先压缩标签内边距，尽量保持单行；仍放不下时由 flex-wrap 换行。 */
+  .results-tab { padding: 8px 11px; }
   .toolbar-actions { margin-left: 0; width: 100%; }
   .toolbar-actions .toolbar-btn { flex: 1; justify-content: center; }
   #navChart { height: 420px; }

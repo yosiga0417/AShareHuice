@@ -3,6 +3,7 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from io import BytesIO
 import logging
+from pathlib import Path
 import threading
 import time
 from typing import Callable, Dict, List, Optional, Tuple, Union
@@ -11,6 +12,8 @@ import uuid
 import pandas as pd
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 
 from backend.cache import migrate_legacy_csv_cache
@@ -732,8 +735,8 @@ def run_backtest_task(task_id: str, request: BacktestRequest) -> None:
 # ── API Routes ──
 
 @app.get("/api/health")
-def health() -> Dict[str, str]:
-    return {"status": "ok", "data_source": "AKShare"}
+def health() -> Dict[str, object]:
+    return {"status": "ok", "data_source": "AKShare", "frontend_served": True}
 
 
 @app.post("/api/parse-components")
@@ -868,3 +871,43 @@ def get_backtest_task_api(task_id: str) -> Dict[str, object]:
 def cancel_backtest_task_api(task_id: str) -> Dict[str, object]:
     request_backtest_cancel(task_id)
     return get_backtest_task_payload(task_id)
+
+
+# ────────────────────────────────────────────────────────────────
+# 静态前端：访问 http://127.0.0.1:8000/ 直接打开页面，无需再手动双击 index.html
+# 只暴露前端资源（index.html / app.js / styles.css / vendor/），
+# 不会暴露 backend/ 源码、tests/ 与 .cache/ 数据。
+# ────────────────────────────────────────────────────────────────
+FRONTEND_DIR = Path(__file__).resolve().parent.parent
+
+
+def _frontend_file(name: str) -> FileResponse:
+    path = FRONTEND_DIR / name
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail=f"前端文件缺失：{name}")
+    return FileResponse(path)
+
+
+@app.get("/", include_in_schema=False)
+def serve_frontend_index() -> FileResponse:
+    return _frontend_file("index.html")
+
+
+@app.get("/index.html", include_in_schema=False)
+def serve_frontend_index_alias() -> FileResponse:
+    return _frontend_file("index.html")
+
+
+@app.get("/app.js", include_in_schema=False)
+def serve_frontend_app_js() -> FileResponse:
+    return _frontend_file("app.js")
+
+
+@app.get("/styles.css", include_in_schema=False)
+def serve_frontend_styles() -> FileResponse:
+    return _frontend_file("styles.css")
+
+
+_VENDOR_DIR = FRONTEND_DIR / "vendor"
+if _VENDOR_DIR.is_dir():
+    app.mount("/vendor", StaticFiles(directory=str(_VENDOR_DIR)), name="vendor")

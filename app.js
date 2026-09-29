@@ -24,6 +24,9 @@
     plans: [],
     previewComponents: [],
     chart: null,
+    // 净值图时间轴缩放区间（百分比 {start,end}）；null = 未缩放（全区间）。
+    // 三个视图（净值 / 回撤 / 超额收益）共用同一 ECharts 实例，故统一存放于此。
+    navZoom: null,
     nextPlanId: 1,
     nextRowId: 1,
     lastResult: null,
@@ -1195,6 +1198,54 @@
   const BENCHMARK_COLORS = { "000300": "#f59e0b", "000905": "#10b981", "000001": "#8b5cf6" };
   const BENCHMARK_NAMES  = { "000300": "沪深300",  "000905": "中证500",  "000001": "上证指数" };
 
+  /* ── 净值图时间轴缩放（与「持仓演变」一致：底部滑条 + 框内滚轮/拖拽） ──
+     净值 / 回撤 / 超额收益三个视图共用同一 ECharts 实例，缩放区间统一记在
+     state.navZoom 上。ECharts 的 dataZoom 在 setOption 合并时会保留当前区间、
+     忽略 option 里的 start/end，而切换视图（notMerge）又会重置区间，所以每次
+     重绘后都用 dispatchAction 显式回填，用户选定的那段时间因此不会丢。 */
+
+  // 滑条的 start/end（百分比）；未缩放时返回全区间。
+  function navZoomPercent() {
+    const zoom = state.navZoom;
+    const start = Number(zoom?.start);
+    const end = Number(zoom?.end);
+    return {
+      start: Number.isFinite(start) ? Math.max(0, Math.min(100, start)) : 0,
+      end: Number.isFinite(end) ? Math.max(0, Math.min(100, end)) : 100
+    };
+  }
+
+  // 新的回测结果到来时回到全区间，避免沿用上一次回测的区间比例。
+  function resetNavZoom() {
+    state.navZoom = null;
+  }
+
+  // 重绘后把 state.navZoom 回填到图表上（未缩放时即 0-100 全区间）。
+  function syncNavChartZoom() {
+    const chart = state.chart;
+    if (!chart) return;
+    const range = navZoomPercent();
+    chart.dispatchAction({ type: "dataZoom", start: range.start, end: range.end });
+  }
+
+  // 记录用户拖滑条 / 滚轮 / 拖拽产生的区间；只绑定一次。
+  function trackNavZoom() {
+    const chart = state.chart;
+    if (!chart || chart.__navZoomTracked) return;
+    chart.__navZoomTracked = true;
+    chart.on("datazoom", payload => {
+      // 滑条拖动事件带顶层 start/end；框内滚轮 / 拖拽走 batch 数组。
+      const item = (payload?.batch?.length ? payload.batch[0] : payload) || {};
+      let start = Number(item.start);
+      let end = Number(item.end);
+      if (!Number.isFinite(start) || !Number.isFinite(end)) return;
+      if (start < 0) start = 0;
+      if (end > 100) end = 100;
+      // 完全回到全区间时清空，视为“未缩放”。
+      state.navZoom = (start <= 0.001 && end >= 99.999) ? null : { start, end };
+    });
+  }
+
   function getSelectedBenchmarks() {
     return [...document.querySelectorAll(".bm-check:checked")].map(cb => cb.value);
   }
@@ -1202,6 +1253,7 @@
   function renderChart(nav = [], rebalanceDates = [], benchmarkNavs = {}, rebalanceHoldings = {}) {
     const dom = document.getElementById("navChart");
     if (!state.chart) state.chart = echarts.init(dom);
+    trackNavZoom();
 
     const navSeries = normalizeValueSeries(nav);
     const normalizedBenchmarkNavs = normalizeBenchmarkNavs(benchmarkNavs);
@@ -1335,8 +1387,8 @@
       },
       axisPointer: { link: [{ xAxisIndex: "all" }] },
       grid: [
-        { top: 20, left: 52, right: 16, bottom: "36%" },
-        { top: "68%", left: 52, right: 16, bottom: 28 }
+        { top: 20, left: 52, right: 16, bottom: "42%" },
+        { top: "62%", left: 52, right: 16, bottom: 64 }
       ],
       xAxis: [
         {
@@ -1364,6 +1416,41 @@
             formatter: v => v === 0 ? "0" : (v * 100).toFixed(0) + "%"
           },
           splitLine: { lineStyle: { color: UI.surfaceSubtle } }
+        }
+      ],
+      dataZoom: [
+        {
+          type: "inside",
+          xAxisIndex: [0, 1],
+          filterMode: "filter",
+          minSpan: 5,
+          zoomOnMouseWheel: true,
+          moveOnMouseMove: true
+        },
+        {
+          type: "slider",
+          xAxisIndex: [0, 1],
+          filterMode: "filter",
+          height: 18,
+          left: 52,
+          right: 16,
+          bottom: 14,
+          showDetail: false,
+          brushSelect: false,
+          borderColor: "transparent",
+          backgroundColor: UI.surfaceSubtle,
+          fillerColor: "rgba(37,99,235,0.16)",
+          handleSize: "80%",
+          handleStyle: { color: UI.surface, borderColor: UI.subtleLight, borderWidth: 1 },
+          moveHandleStyle: { color: UI.primary },
+          dataBackground: {
+            lineStyle: { color: UI.borderLight },
+            areaStyle: { color: UI.borderLight }
+          },
+          selectedDataBackground: {
+            lineStyle: { color: UI.primary },
+            areaStyle: { color: "rgba(37,99,235,0.14)" }
+          }
         }
       ],
       series: [
@@ -1454,6 +1541,9 @@
       notMerge: false,
       replaceMerge: ["series"]
     });
+
+    // 重绘后回填用户选定的时间轴区间（见 syncNavChartZoom 注释）
+    syncNavChartZoom();
   }
 
   // ── Holdings evolution trend chart ──
@@ -2369,6 +2459,8 @@ function renderBacktestNotes(result = null) {
   function applyBacktestResult(data, elapsedSeconds) {
     data = normalizeBacktestResult(data);
     state.lastResult = data;
+    // 新结果的时间范围可能不同，缩放区间回到全区间重新开始。
+    resetNavZoom();
     saveLastResult();
     syncResultsEmptyState();
     renderMetrics(data.metrics || {}, data.comparison_metrics || []);
