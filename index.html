@@ -16,7 +16,7 @@
   </script>
   <!-- ECharts 已本地化（vendor/echarts.min.js，v5.6.0，Apache-2.0），离线可用，无需外部 CDN -->
   <script src="vendor/echarts.min.js"></script>
-  <link rel="stylesheet" href="styles.css" />
+  <link rel="stylesheet" href="styles.css?v=20261026-weight3" />
 </head>
 <body>
 
@@ -51,6 +51,9 @@
   <symbol id="i-arrow-right" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></symbol>
   <symbol id="i-list" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 5h.01"/><path d="M3 12h.01"/><path d="M3 19h.01"/><line x1="8" x2="21" y1="6" y2="6"/><line x1="8" x2="21" y1="12" y2="12"/><line x1="8" x2="21" y1="19" y2="19"/></symbol>
   <symbol id="i-play" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="6 3 20 12 6 21 6 3"/></symbol>
+  <symbol id="i-grid" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="7" height="7" x="3" y="3" rx="1"/><rect width="7" height="7" x="14" y="3" rx="1"/><rect width="7" height="7" x="14" y="14" rx="1"/><rect width="7" height="7" x="3" y="14" rx="1"/></symbol>
+  <symbol id="i-layers" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83Z"/><path d="m6.08 9.5-3.5 1.6a1 1 0 0 0 0 1.81l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9a1 1 0 0 0 0-1.83l-3.5-1.59"/><path d="m6.08 14.5-3.5 1.6a1 1 0 0 0 0 1.81l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9a1 1 0 0 0 0-1.83l-3.5-1.59"/></symbol>
+  <symbol id="i-terminal" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" x2="20" y1="19" y2="19"/></symbol>
 </svg>
 
 <div class="app-shell">
@@ -71,14 +74,17 @@
         <span class="status-dot" aria-hidden="true"></span>
         <span class="status-text">正在检测服务…</span>
       </span>
-      <span class="status-chip is-static" title="配置自动保存到本地浏览器">
-        <svg class="icon"><use href="#i-save"/></svg>
-        <span id="saveIndicator">已自动保存</span>
+      <span class="status-meta">
+        <span class="status-meta-item" title="配置自动保存到本地浏览器">
+          <svg class="icon"><use href="#i-save"/></svg>
+          <span id="saveIndicator">已自动保存</span>
+        </span>
+        <span class="status-meta-item is-hidden" id="lastRunChip" title="最近一次回测耗时">
+          <svg class="icon"><use href="#i-clock"/></svg>
+          <span>上次运行 <b id="lastRunText">—</b></span>
+        </span>
       </span>
-      <span class="status-chip is-static is-hidden" id="lastRunChip" title="最近一次回测耗时">
-        <svg class="icon"><use href="#i-clock"/></svg>
-        <span>上次运行 <b id="lastRunText">—</b></span>
-      </span>
+      <span class="header-divider" aria-hidden="true"></span>
       <button type="button" class="icon-btn" id="themeToggle" data-theme="dark" title="切换深色/浅色主题" aria-label="切换主题">
         <svg class="icon icon-sun"><use href="#i-sun"/></svg>
         <svg class="icon icon-moon"><use href="#i-moon"/></svg>
@@ -117,7 +123,7 @@
               <select id="targetPlanSelect" class="select-grow"></select>
               <button id="applyPreviewBtn" type="button" class="secondary" disabled>应用</button>
             </div>
-            <div class="hint" id="importSummary">未导入文件。选择文件后会自动解析预览，选择目标计划后点击「应用」。解析时会强制保留6位股票代码（如 002879）。</div>
+            <div class="hint" id="importSummary">选择文件后会自动解析预览，再选目标计划点击「应用」；股票代码强制保留 6 位（如 002879）。</div>
             <div id="previewWrap" class="is-hidden">
               <div class="preview-label">解析预览（前100行）</div>
               <div class="table-wrap">
@@ -273,11 +279,11 @@
 
     <!-- 结果标签页 -->
     <nav class="results-tabs" role="tablist" aria-label="回测结果视图">
-      <button type="button" class="results-tab" role="tab" id="tab-overview" aria-selected="true" aria-controls="panel-overview" data-tab="overview">概览</button>
-      <button type="button" class="results-tab" role="tab" id="tab-nav" aria-selected="false" aria-controls="panel-nav" data-tab="nav" tabindex="-1">净值与回撤</button>
-      <button type="button" class="results-tab" role="tab" id="tab-holdings" aria-selected="false" aria-controls="panel-holdings" data-tab="holdings" tabindex="-1">持仓演变</button>
-      <button type="button" class="results-tab" role="tab" id="tab-periodic" aria-selected="false" aria-controls="panel-periodic" data-tab="periodic" tabindex="-1">周期收益</button>
-      <button type="button" class="results-tab" role="tab" id="tab-logs" aria-selected="false" aria-controls="panel-logs" data-tab="logs" tabindex="-1">运行日志</button>
+      <button type="button" class="results-tab" role="tab" id="tab-overview" aria-selected="true" aria-controls="panel-overview" data-tab="overview"><svg class="icon" aria-hidden="true"><use href="#i-grid"/></svg>概览</button>
+      <button type="button" class="results-tab" role="tab" id="tab-nav" aria-selected="false" aria-controls="panel-nav" data-tab="nav" tabindex="-1"><svg class="icon" aria-hidden="true"><use href="#i-chart-line"/></svg>净值与回撤</button>
+      <button type="button" class="results-tab" role="tab" id="tab-holdings" aria-selected="false" aria-controls="panel-holdings" data-tab="holdings" tabindex="-1"><svg class="icon" aria-hidden="true"><use href="#i-layers"/></svg>持仓演变</button>
+      <button type="button" class="results-tab" role="tab" id="tab-periodic" aria-selected="false" aria-controls="panel-periodic" data-tab="periodic" tabindex="-1"><svg class="icon" aria-hidden="true"><use href="#i-calendar-days"/></svg>周期收益</button>
+      <button type="button" class="results-tab" role="tab" id="tab-logs" aria-selected="false" aria-controls="panel-logs" data-tab="logs" tabindex="-1"><svg class="icon" aria-hidden="true"><use href="#i-terminal"/></svg>运行日志</button>
     </nav>
 
     <!-- 概览：指标带 + 报告 -->
@@ -318,15 +324,15 @@
           <span class="bm-section-label">基准</span>
           <label class="bm-label">
             <input type="checkbox" class="bm-check" value="000300" checked />
-            <span class="bm-swatch" style="background:#f59e0b;"></span>沪深300
+            <span class="bm-swatch" style="background:var(--bench-300);"></span>沪深300
           </label>
           <label class="bm-label">
             <input type="checkbox" class="bm-check" value="000905" />
-            <span class="bm-swatch" style="background:#10b981;"></span>中证500
+            <span class="bm-swatch" style="background:var(--bench-905);"></span>中证500
           </label>
           <label class="bm-label">
             <input type="checkbox" class="bm-check" value="000001" />
-            <span class="bm-swatch" style="background:#8b5cf6;"></span>上证指数
+            <span class="bm-swatch" style="background:var(--bench-1);"></span>上证指数
           </label>
         </div>
         <div class="benchmark-bar is-hidden" id="comparisonBar">
@@ -443,23 +449,58 @@
     return null;
   }
 
-  function computeExcess(opt) {
+  /* 每个已勾选的基准各生成一条超额收益曲线（组合净值 / 基准净值）。
+     此前只取第一条有数据的基准，所以勾选多个基准时图上始终只有一条曲线。 */
+  function computeExcessSeries(opt) {
     var nav = findSeries(opt, 'nav-series');
-    var bm = null;
+    if (!nav) return [];
+    var n = nav.data || [];
     var series = opt.series || [];
+    var out = [];
     for (var i = 0; i < series.length; i++) {
       var s = series[i];
-      if (s.id && s.id.indexOf('benchmark-') === 0 && (s.data || []).some(function (v) { return v != null; })) {
-        bm = s; break;
+      if (!s.id || s.id.indexOf('benchmark-') !== 0) continue;
+      var b = s.data || [];
+      var hasData = false;
+      for (var t = 0; t < b.length; t++) {
+        if (b[t] != null) { hasData = true; break; }
       }
-    }
-    if (!nav || !bm) return null;
-    var n = nav.data || [], b = bm.data || [], out = [];
-    for (var k = 0; k < n.length; k++) {
-      var x = n[k], y = b[k];
-      out.push(x != null && y != null && y !== 0 ? x / y : null);
+      if (!hasData) continue;
+      var ratio = [];
+      for (var k = 0; k < n.length; k++) {
+        var x = n[k], y = b[k];
+        ratio.push(x != null && y != null && y !== 0 ? x / y : null);
+      }
+      out.push({
+        code: s.id.slice('benchmark-'.length),
+        name: s.name || s.id.slice('benchmark-'.length),
+        color: (s.lineStyle && s.lineStyle.color) || null,
+        data: ratio
+      });
     }
     return out;
+  }
+
+  /* 把基准色（可能是 #rrggbb / #rgb / rgb()）转成带透明度的填充色，
+     用于单条超额曲线时的面积渐变；无法解析时返回 null（则不画面积）。 */
+  function withAlpha(color, alpha) {
+    if (typeof color !== 'string' || !color) return null;
+    var c = color.trim();
+    var hex = c.match(/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/);
+    if (hex) {
+      var h = hex[1];
+      if (h.length === 3) h = h[0] + h[0] + h[1] + h[1] + h[2] + h[2];
+      var num = parseInt(h, 16);
+      return 'rgba(' + ((num >> 16) & 255) + ',' + ((num >> 8) & 255) + ',' + (num & 255) + ',' + alpha + ')';
+    }
+    var rgb = c.match(/^rgba?\(([^)]+)\)$/i);
+    if (rgb) {
+      var parts = rgb[1].split(',').map(function (v) { return parseFloat(v); });
+      if (parts.length >= 3 && parts.slice(0, 3).every(function (v) { return !isNaN(v); })) {
+        return 'rgba(' + parts[0] + ',' + parts[1] + ',' + parts[2] + ',' + alpha + ')';
+      }
+    }
+    return null;
   }
 
   /* 底部时间轴滑条 + 框内滚轮/拖拽缩放，样式与「持仓演变」一致。
@@ -512,39 +553,79 @@
     if (typeof syncNavChartZoom === 'function') syncNavChartZoom();
   }
 
-  /* 单窗格视图（回撤 / 超额收益）：用全新 option 整体替换，避免合并歧义 */
-  function buildSingleOption(dates, series, yFmt, tooltipFmt) {
+  /* 单窗格视图的坐标轴/图例配色：跟随当前主题（复用 app.js 的 UI 色板），
+     app.js 未加载时退回浅色默认值。此前写死浅色值，深色主题下会看不清。 */
+  function viewPalette() {
+    var hasUI = (typeof UI !== 'undefined');
+    return {
+      legend: hasUI ? (UI.subtle || '#64748b') : '#64748b',
+      axis: hasUI ? (UI.subtle || '#64748b') : '#64748b',
+      axisStrong: hasUI ? (UI.textMuted || '#334155') : '#334155',
+      line: hasUI ? (UI.border || '#dbe4ef') : '#dbe4ef'
+    };
+  }
+
+  /* 单窗格视图（回撤 / 超额收益）：用全新 option 整体替换，避免合并歧义。
+     legendNames 非空时（多个基准对比）在图顶部显示图例，便于区分各条曲线。
+     extraTooltipRows 返回额外的 {name, value, valueColor} 行（如回撤视图里的
+     「净值日涨跌」），与曲线行一起排成两列表格。 */
+  function buildSingleOption(dates, series, yFmt, tooltipFmt, legendNames, extraTooltipRows) {
+    var hasLegend = !!(legendNames && legendNames.length);
+    var pal = viewPalette();
     return {
       animationDuration: 300,
+      legend: hasLegend
+        ? {
+            data: legendNames,
+            top: 2, left: 54, itemWidth: 14, itemHeight: 8, icon: 'roundRect',
+            textStyle: { color: pal.legend, fontSize: 11 }
+          }
+        : { show: false },
       tooltip: {
         trigger: 'axis',
+        confine: true,
         axisPointer: { type: 'cross' },
         backgroundColor: 'rgba(15,23,42,0.88)',
         borderColor: '#334155',
         textStyle: { color: '#f8fafc', fontSize: 12 },
         formatter: function (params) {
           if (!params || !params.length) return '';
-          var html = '<div style="margin-bottom:4px;font-weight:600;">' + params[0].axisValue + '</div>';
+          var date = params[0].axisValue;
+          var rows = [];
           for (var i = 0; i < params.length; i++) {
             var p = params[i];
             if (p.data == null) continue;
-            html += '<span style="color:' + p.color + ';display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:5px;"></span> ' + p.seriesName +
-              ' <b>' + tooltipFmt(p.data) + '</b><br/>';
+            rows.push({ name: p.seriesName, color: p.color, value: tooltipFmt(p.data) });
           }
+          if (typeof extraTooltipRows === 'function') {
+            var extra = extraTooltipRows(date);
+            if (extra && extra.length) rows = rows.concat(extra);
+          }
+          var html = '<div style="margin-bottom:5px;font-weight:600;">' + date + '</div>';
+          if (!rows.length) return html;
+          html += '<table class="bt-tip-table"><tbody>';
+          for (var r = 0; r < rows.length; r++) {
+            var row = rows[r];
+            html += '<tr><td>' +
+              (row.color ? '<span class="bt-tip-dot" style="background:' + row.color + ';"></span>' : '') +
+              '<span class="bt-tip-name">' + row.name + '</span></td>' +
+              '<td' + (row.valueColor ? ' style="color:' + row.valueColor + ';"' : '') + '>' + row.value + '</td></tr>';
+          }
+          html += '</tbody></table>';
           return html;
         }
       },
-      grid: { top: 26, left: 54, right: 18, bottom: 64 },
+      grid: { top: hasLegend ? 48 : 26, left: 54, right: 18, bottom: 64 },
       dataZoom: buildDataZoom(),
       xAxis: {
         type: 'category', data: dates,
-        axisLabel: { color: '#64748b', fontSize: 11 },
-        axisLine: { lineStyle: { color: '#e2e8f0' } }
+        axisLabel: { color: pal.axis, fontSize: 11 },
+        axisLine: { lineStyle: { color: pal.line } }
       },
       yAxis: {
         type: 'value', scale: true,
-        axisLabel: { color: '#334155', fontSize: 11, formatter: yFmt },
-        splitLine: { lineStyle: { color: '#edf2f7' } }
+        axisLabel: { color: pal.axisStrong, fontSize: 11, formatter: yFmt },
+        splitLine: { lineStyle: { color: pal.line, type: 'dashed', opacity: 0.6 } }
       },
       series: series
     };
@@ -559,19 +640,50 @@
     if (current === VIEW.DD) {
       var dd = findSeries(src, 'drawdown-series');
       var ddData = (dd && dd.data) || [];
+      /* 回撤视图只画回撤曲线，但 Tooltip 里同时给出当天的净值日涨跌，
+         与「净值」视图看到的口径一致。 */
+      var nav = findSeries(src, 'nav-series');
+      var navData = (nav && nav.data) || [];
+      var dailyByDate = {};
+      for (var di = 1; di < dates.length; di++) {
+        if (navData[di] == null || navData[di - 1] == null) continue;
+        var cur = Number(navData[di]), prev = Number(navData[di - 1]);
+        if (!isFinite(cur) || !isFinite(prev) || prev === 0) continue;
+        dailyByDate[dates[di]] = (cur - prev) / prev;
+      }
+      var dailyRow = function (date) {
+        var d = dailyByDate[date];
+        if (d == null || !isFinite(d)) return [];
+        var pct = Math.abs(d) < 5e-7 ? 0 : d * 100;
+        var col = pct > 0 ? ((typeof UI !== 'undefined' && UI.up) || '#d92b2b')
+          : pct < 0 ? ((typeof UI !== 'undefined' && UI.down) || '#0a8f5b')
+            : ((typeof UI !== 'undefined' && UI.subtle) || '#94a3b8');
+        return [{
+          name: '净值日涨跌',
+          value: (pct > 0 ? '+' : '') + pct.toFixed(2) + '%',
+          valueColor: col
+        }];
+      };
+      /* 回撤属于「跌」，按 A 股习惯用绿色；色值取 app.js 的主题色板 */
+      var ddColor = (typeof UI !== 'undefined' && UI.down) || '#0a8f5b';
       var ddSeries = [{
         id: 'drawdown-series', name: '回撤', type: 'line',
         smooth: false, showSymbol: false,
-        lineStyle: { width: 1.5, color: '#dc2626' },
+        lineStyle: { width: 1.5, color: ddColor },
         areaStyle: {
           color: { type: 'linear', x: 0, y: 0, x2: 0, y2: 1,
-            colorStops: [{ offset: 0, color: 'rgba(220,38,38,0.18)' }, { offset: 1, color: 'rgba(220,38,38,0.03)' }] }
+            colorStops: [
+              { offset: 0, color: withAlpha(ddColor, 0.20) || 'rgba(10,143,91,0.20)' },
+              { offset: 1, color: withAlpha(ddColor, 0.03) || 'rgba(10,143,91,0.03)' }
+            ] }
         },
         data: ddData
       }];
       chart._origSet(buildSingleOption(dates, ddSeries,
         function (v) { return (v * 100).toFixed(1) + '%'; },
-        function (v) { return (v * 100).toFixed(2) + '%'; }
+        function (v) { return (v * 100).toFixed(2) + '%'; },
+        null,
+        dailyRow
       ), { notMerge: true });
       restoreZoom();
       setViewHint('');
@@ -579,29 +691,46 @@
     }
 
     if (current === VIEW.EXCESS) {
-      var excess = computeExcess(src);
-      var exSeries = [{
-        id: 'excess-series', name: '超额收益', type: 'line',
-        smooth: true, showSymbol: false, connectNulls: true, z: 5,
-        lineStyle: { width: 2, color: '#2563eb' },
-        areaStyle: {
-          color: { type: 'linear', x: 0, y: 0, x2: 0, y2: 1,
-            colorStops: [{ offset: 0, color: 'rgba(37,99,235,0.16)' }, { offset: 1, color: 'rgba(37,99,235,0.02)' }] }
-        },
-        markLine: {
-          symbol: 'none', silent: true, z: 3,
-          lineStyle: { color: '#94a3b8', type: 'dashed', width: 1 },
-          label: { show: true, position: 'insideEndTop', color: '#94a3b8', fontSize: 11, formatter: '基准 = 1.00' },
-          data: [{ yAxis: 1 }]
-        },
-        data: excess || []
-      }];
+      var list = computeExcessSeries(src);
+      var legendNames = [];
+      var exSeries = list.map(function (item, idx) {
+        var color = item.color || ['#2563eb', '#d97706', '#059669', '#7c3aed'][idx % 4];
+        var name = item.name + '超额';
+        legendNames.push(name);
+        var s = {
+          id: 'excess-' + item.code, name: name, type: 'line',
+          smooth: true, showSymbol: false, connectNulls: true, z: 5 + idx,
+          lineStyle: { width: list.length > 1 ? 1.8 : 2, color: color },
+          itemStyle: { color: color },
+          data: item.data
+        };
+        // 仅单条曲线时铺面积，多条叠加会互相遮挡、反而看不清
+        if (list.length === 1) {
+          var top = withAlpha(color, 0.16), bottom = withAlpha(color, 0.02);
+          if (top && bottom) {
+            s.areaStyle = {
+              color: { type: 'linear', x: 0, y: 0, x2: 0, y2: 1,
+                colorStops: [{ offset: 0, color: top }, { offset: 1, color: bottom }] }
+            };
+          }
+        }
+        if (idx === 0) {
+          s.markLine = {
+            symbol: 'none', silent: true, z: 3,
+            lineStyle: { color: '#94a3b8', type: 'dashed', width: 1 },
+            label: { show: true, position: 'insideEndTop', color: '#94a3b8', fontSize: 11, formatter: '基准 = 1.00' },
+            data: [{ yAxis: 1 }]
+          };
+        }
+        return s;
+      });
       chart._origSet(buildSingleOption(dates, exSeries,
         function (v) { return ((v - 1) * 100).toFixed(1) + '%'; },
-        function (v) { return ((v - 1) * 100).toFixed(2) + '%'; }
+        function (v) { return ((v - 1) * 100).toFixed(2) + '%'; },
+        list.length > 1 ? legendNames : null
       ), { notMerge: true });
       restoreZoom();
-      setViewHint(excess ? '' : '超额收益视图需要至少勾选一个对比基准（上方「基准」）。');
+      setViewHint(list.length ? '' : '超额收益视图需要至少勾选一个对比基准（上方「基准」）。');
       return;
     }
   }
@@ -645,7 +774,7 @@
 })();
 </script>
 
-<script src="app.js?v=20260710-filefix"></script>
+<script src="app.js?v=20261026-weight3"></script>
 
 <script>
 /* ════════════════════════════════════════════════════════════════

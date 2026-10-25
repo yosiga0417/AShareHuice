@@ -4,6 +4,8 @@
   // app.js v2 — holdings chart + auto-normalize (2026-05-15)
   const UI = {
     primary: '#0057b8', positive: '#0f766e', danger: '#b91c1c', warning: '#c2410c',
+    /* A 股涨跌语义色：涨 = 红、跌 = 绿（与 positive/danger 的状态语义解耦） */
+    up: '#d92b2b', down: '#0a8f5b',
     subtle: '#64748b', subtleLight: '#94a3b8',
     text: '#1e293b', textDark: '#0f172a', textMuted: '#334155',
     surface: '#ffffff', surfaceSubtle: '#f8fafc',
@@ -44,6 +46,7 @@
   const UI_THEMES = {
     dark: {
       primary: '#3b82f6', positive: '#34d399', danger: '#fb7185', warning: '#fbbf24',
+      up: '#f6465d', down: '#2ebd85',
       subtle: '#94a3b8', subtleLight: '#64748b',
       text: '#e6edf6', textDark: '#f8fafc', textMuted: '#b9c6d6',
       surface: 'rgba(17,24,41,.58)', surfaceSubtle: 'rgba(17,24,41,.42)',
@@ -52,6 +55,7 @@
     },
     light: {
       primary: '#0057b8', positive: '#0f766e', danger: '#b91c1c', warning: '#c2410c',
+      up: '#d92b2b', down: '#0a8f5b',
       subtle: '#64748b', subtleLight: '#94a3b8',
       text: '#1e293b', textDark: '#0f172a', textMuted: '#334155',
       surface: '#ffffff', surfaceSubtle: '#f8fafc',
@@ -67,6 +71,13 @@
       if (state && state.lastResult && typeof refreshChart === 'function') refreshChart();
     } catch (e) { /* 无结果时忽略 */ }
   };
+  /* 首屏即套用当前主题的图表色板。
+     此前 __btApplyTheme 只在点击主题按钮时被调用，而上方 UI 的初始值是浅色，
+     导致深色主题首次加载时图表沿用浅色色板（白底、浅色网格线、深色轴标签），
+     必须手动切换一次主题才恢复正常。 */
+  window.__btApplyTheme(
+    document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark'
+  );
 
   const metricsConfig = [
     ["total_return",           "区间总收益",    "pct"],
@@ -111,6 +122,18 @@
   /* ────────────────────────────────────────────────
      Helpers
   ──────────────────────────────────────────────── */
+  /* hex → rgba()：图表渐变需要随主题取色（如 #3b82f6 → rgba(59,130,246,.3)）。
+     注：renderHoldingsChart 内部另有一份同名用途的局部实现，这里是顶层通用版。 */
+  function hexToRgba(hex, alpha) {
+    const value = String(hex || "").replace("#", "").trim();
+    if (value.length !== 6) return hex;
+    const r = parseInt(value.slice(0, 2), 16);
+    const g = parseInt(value.slice(2, 4), 16);
+    const b = parseInt(value.slice(4, 6), 16);
+    if ([r, g, b].some(Number.isNaN)) return hex;
+    return `rgba(${r},${g},${b},${alpha})`;
+  }
+
   function normalizeCode(raw) {
     const text = String(raw ?? "").trim();
     if (!text) return "";
@@ -134,7 +157,16 @@
     return rows.reduce((acc, row) => acc + (Number(row.weight) || 0), 0);
   }
 
-  function assignWeightsToTarget(rows, baseWeights, target = 100, decimals = 4) {
+  /* 权重统一保留 3 位小数：显示、归一化/均分/分配剩余等写回 state 的计算
+     也都按这个精度取整，保证「列里看到的数字之和」与合计徽章一致
+     （0.3 → "0.300"、12.5 → "12.500"、空值 → "0.000"）。 */
+  const WEIGHT_DECIMALS = 3;
+  function formatWeightValue(weight) {
+    const value = Number(weight);
+    return (Number.isFinite(value) ? value : 0).toFixed(WEIGHT_DECIMALS);
+  }
+
+  function assignWeightsToTarget(rows, baseWeights, target = 100, decimals = WEIGHT_DECIMALS) {
     if (!rows.length) return false;
     const cleanWeights = baseWeights.map(weight => Math.max(0, Number(weight) || 0));
     const total = cleanWeights.reduce((a, b) => a + b, 0);
@@ -154,7 +186,7 @@
     return true;
   }
 
-  function normalizeWeights(rows, decimals = 4) {
+  function normalizeWeights(rows, decimals = WEIGHT_DECIMALS) {
     const validRows = rows.filter(row => normalizeCode(row.code));
     if (!validRows.length) return;
     let baseWeights = validRows.map(row => Number(row.weight) || 0);
@@ -163,7 +195,7 @@
     assignWeightsToTarget(validRows, baseWeights, 100, decimals);
   }
 
-  function capOverweightTo100(rows, decimals = 4) {
+  function capOverweightTo100(rows, decimals = WEIGHT_DECIMALS) {
     const validRows = rows.filter(row => normalizeCode(row.code));
     const total = sumWeights(validRows);
     if (total <= 100.0001) return { changed: false, total };
@@ -221,10 +253,10 @@
     }
     // Precise normalization
     const allWeights = validRows.map(r => Math.max(0, Number(r.weight) || 0));
-    return assignWeightsToTarget(validRows, allWeights, 100, 4);
+    return assignWeightsToTarget(validRows, allWeights, 100, WEIGHT_DECIMALS);
   }
 
-  function distributeRemainingWeights(rows, decimals = 4) {
+  function distributeRemainingWeights(rows, decimals = WEIGHT_DECIMALS) {
     const validRows = rows.filter(row => normalizeCode(row.code));
     if (!validRows.length) return { ok: false, message: "没有可分配权重的有效成分股。" };
     if (validRows.some(row => (Number(row.weight) || 0) < 0))
@@ -237,7 +269,7 @@
     }, 0);
     const remaining = 100 - fixedTotal;
     if (remaining < -0.00005)
-      return { ok: false, message: `非零权重合计 ${fixedTotal.toFixed(4)}%，已超 100%。` };
+      return { ok: false, message: `非零权重合计 ${formatWeightValue(fixedTotal)}%，已超 100%。` };
     if (remaining <= 0.00005) return { ok: false, message: "剩余权重为 0，无需分配。" };
     const scale = 10 ** decimals;
     const totalUnits = Math.round(remaining * scale);
@@ -928,7 +960,7 @@
       <tr>
         <td>${escapeHtml(row.code)}</td>
         <td>${escapeHtml(row.name) || "-"}</td>
-        <td>${Number(row.weight).toFixed(4)}</td>
+        <td>${formatWeightValue(row.weight)}</td>
       </tr>
     `).join("");
   }
@@ -952,23 +984,23 @@
 
       const rows = plan.components.map(row => `
         <tr>
-          <td>
-            <input type="text" value="${escapeHtml(row.code)}"
+          <td class="col-code">
+            <input type="text" value="${escapeHtml(row.code)}" inputmode="numeric" autocomplete="off" spellcheck="false"
               data-action="edit-cell" data-plan-id="${plan.id}" data-row-id="${row.id}" data-field="code"
-              placeholder="000001" class="plan-edit-code" />
+              aria-label="股票代码" placeholder="000001" class="plan-edit-code" />
           </td>
-          <td>
-            <input type="text" value="${escapeHtml(row.name)}"
+          <td class="col-name">
+            <input type="text" value="${escapeHtml(row.name)}" autocomplete="off"
               data-action="edit-cell" data-plan-id="${plan.id}" data-row-id="${row.id}" data-field="name"
-              placeholder="可选" class="plan-edit-name" />
+              aria-label="股票名称" placeholder="可选" class="plan-edit-name" />
           </td>
-          <td>
-            <input type="number" step="0.0001" value="${Number(row.weight) || 0}"
+          <td class="col-weight">
+            <input type="number" step="0.001" value="${formatWeightValue(row.weight)}" inputmode="decimal"
               data-action="edit-cell" data-plan-id="${plan.id}" data-row-id="${row.id}" data-field="weight"
-              class="plan-edit-weight" />
+              aria-label="权重（%）" class="plan-edit-weight" />
           </td>
-          <td>
-            <button class="danger sm"
+          <td class="col-action">
+            <button type="button" class="row-remove" title="删除该行" aria-label="删除该行"
               data-action="remove-row" data-plan-id="${plan.id}" data-row-id="${row.id}">×</button>
           </td>
         </tr>
@@ -1195,7 +1227,17 @@
     `).join("");
   }
 
-  const BENCHMARK_COLORS = { "000300": "#f59e0b", "000905": "#10b981", "000001": "#8b5cf6" };
+  /* 基准色取自 CSS 变量：图表曲线与工具栏图例色条共用同一份定义，
+     并随主题切换明度（暗色下用更亮的色阶，保证细线在深底上可辨）。 */
+  const BENCHMARK_VARS = { "000300": "--bench-300", "000905": "--bench-905", "000001": "--bench-1" };
+  function benchmarkColor(code, fallback = "#94a3b8") {
+    const varName = BENCHMARK_VARS[code];
+    if (!varName) return fallback;
+    try {
+      const v = getComputedStyle(document.documentElement).getPropertyValue(varName).trim();
+      return v || fallback;
+    } catch (e) { return fallback; }
+  }
   const BENCHMARK_NAMES  = { "000300": "沪深300",  "000905": "中证500",  "000001": "上证指数" };
 
   /* ── 净值图时间轴缩放（与「持仓演变」一致：底部滑条 + 框内滚轮/拖拽） ──
@@ -1277,6 +1319,55 @@
       return [{ value: [date, values[index]] }];
     });
 
+    /* ── Tooltip 的「日涨跌」──
+       日涨跌 = 当天净值相对前一交易日的变化。用日期反查下标而不是直接用
+       params.dataIndex：开启 dataZoom 过滤后，dataIndex 是缩放后序列里的位置，
+       与原始数组并不总是对齐，会让日涨跌取错前一日。 */
+    const dateIndexMap = new Map();
+    dates.forEach((date, index) => {
+      if (!dateIndexMap.has(date)) dateIndexMap.set(date, index);
+    });
+    const dailyChangeOf = (seriesData, date) => {
+      const index = dateIndexMap.get(date);
+      if (index == null || index <= 0 || !seriesData) return null;
+      // 先排除空值再转数字：Number(null) === 0，会把「该点没有数据」误算成 -100%
+      const currentRaw = seriesData[index];
+      const previousRaw = seriesData[index - 1];
+      if (currentRaw == null || previousRaw == null) return null;
+      const current = Number(currentRaw);
+      const previous = Number(previousRaw);
+      if (!Number.isFinite(current) || !Number.isFinite(previous) || previous === 0) return null;
+      return (current - previous) / previous;
+    };
+    /* Tooltip 里的日涨跌单元格：文本与颜色分开返回，交给表格统一排版 */
+    const formatDailyCell = dailyChange => {
+      if (dailyChange == null || !Number.isFinite(dailyChange)) {
+        return { text: "--", color: UI.subtle };
+      }
+      // 浮点误差造成的极小变动按 0 展示，避免出现「-0.00%」
+      const pct = Math.abs(dailyChange) < 5e-7 ? 0 : dailyChange * 100;
+      const color = pct > 0 ? UI.up : pct < 0 ? UI.down : UI.subtle;
+      const sign = pct > 0 ? "+" : "";
+      return { text: `${sign}${pct.toFixed(2)}%`, color };
+    };
+    /* 基准 / 对比回测曲线的日涨跌：tooltip 参数里的 p.data 只是当天的单个值，
+       拿不到前一日，所以要按 series id（或名称）回查整条序列。 */
+    const dailyChangeSources = new Map();
+    const dailyChangeSourcesByName = new Map();
+    const registerDailyChangeSource = source => {
+      if (!source || !source.id || !Array.isArray(source.data)) return;
+      dailyChangeSources.set(source.id, source.data);
+      if (source.name && !dailyChangeSourcesByName.has(source.name)) {
+        dailyChangeSourcesByName.set(source.name, source.data);
+      }
+    };
+    const dailyChangeForPoint = (point, date) => {
+      if (!point) return null;
+      const data = (point.seriesId && dailyChangeSources.get(point.seriesId)) ||
+        (point.seriesName && dailyChangeSourcesByName.get(point.seriesName)) || null;
+      return data ? dailyChangeOf(data, date) : null;
+    };
+
     // Build comparison series from saved comparisons
     const COMP_COLORS = ["#ef4444", "#8b5cf6", "#06b6d4", "#f59e0b", "#10b981", "#ec4899", "#6366f1", "#14b8a6"];
     const selectedCompIds = getSelectedComparisonIds();
@@ -1329,58 +1420,103 @@
           type: "line",
           xAxisIndex: 0, yAxisIndex: 0,
           smooth: true, showSymbol: false, connectNulls: true,
-          lineStyle: { width: 1.5, color: BENCHMARK_COLORS[code] || "#888", type: "solid" }
+          lineStyle: { width: 1.6, color: benchmarkColor(code), type: "solid", opacity: .92 }
         };
       });
+
+    [...comparisonSeries, ...benchmarkSeries].forEach(registerDailyChangeSource);
 
     state.chart.setOption({
       animationDuration: 500,
       tooltip: {
         trigger: "axis",
-        axisPointer: { type: "cross", link: [{ xAxisIndex: "all" }] },
-        backgroundColor: "rgba(15,23,42,0.88)",
-        borderColor: UI.textMuted,
-        textStyle: { color: UI.surfaceSubtle, fontSize: 12 },
+        /* 表格化后 Tooltip 略宽，限制在图表区域内，避免被容器裁掉 */
+        confine: true,
+        axisPointer: {
+          type: "cross",
+          link: [{ xAxisIndex: "all" }],
+          label: { backgroundColor: UI.tooltipBg, borderColor: UI.border, borderWidth: 1, color: UI.tooltipText }
+        },
+        backgroundColor: UI.tooltipBg,
+        borderColor: UI.border,
+        borderWidth: 1,
+        padding: [9, 12],
+        extraCssText: "border-radius:10px;box-shadow:0 18px 44px rgba(0,0,0,.42);backdrop-filter:blur(10px);",
+        /* 曾误用 UI.surfaceSubtle 作文字色：暗色主题下它是近乎透明的深色，
+           导致提示框文字几乎不可见。 */
+        textStyle: { color: UI.tooltipText, fontSize: 12 },
         formatter(params) {
           if (!params.length) return "";
           const date = params[0].axisValue;
-          let html = `<div style="margin-bottom:4px;font-weight:600;">${escapeHtml(date)}</div>`;
+          let html = `<div style="margin-bottom:6px;font-weight:600;">${escapeHtml(date)}</div>`;
 
-          // ── Rebalancing date: show holdings ──
+          // ── 调仓日：持仓用「代码 / 名称 / 权重」三列表格，避免数字参差 ──
           if (rebalanceDateSet.has(date)) {
-            html += `<div style="color:#fbbf24;font-size:11px;margin-bottom:3px;">▣ 调仓日</div>`;
+            html += `<div style="color:#fbbf24;font-size:11px;margin-bottom:4px;">▣ 调仓日</div>`;
             const holdings = rebalanceHoldings[date];
             if (holdings?.length) {
               const top = holdings.slice(0, 6);
+              html += `<table class="bt-tip-table bt-tip-holdings"><thead><tr>` +
+                `<th>代码</th><th>名称</th><th>权重</th></tr></thead><tbody>`;
               top.forEach(h => {
-                html += `<div style="font-size:11px;color:${UI.borderLight};">${escapeHtml(h.code)}` +
-                  `${h.name ? " " + escapeHtml(h.name) : ""} ` +
-                  `<b style="color:${UI.surfaceSubtle}">${Number(h.weight).toFixed(2)}%</b></div>`;
+                const name = h.name ? escapeHtml(h.name) : "—";
+                html += `<tr><td>${escapeHtml(h.code)}</td>` +
+                  `<td title="${name}">${name}</td>` +
+                  `<td>${Number(h.weight).toFixed(2)}%</td></tr>`;
               });
+              html += `</tbody></table>`;
               if (holdings.length > 6) {
-                html += `<div style="font-size:10px;color:${UI.subtle};">…另有 ${holdings.length - 6} 只</div>`;
+                html += `<div style="font-size:10px;color:${UI.subtle};margin:2px 0 4px;">…另有 ${holdings.length - 6} 只</div>`;
               }
             }
-            html += `<div style="border-top:1px solid ${UI.textMuted};margin:5px 0 3px;"></div>`;
+            html += `<div style="border-top:1px solid rgba(148,163,184,.24);margin:6px 0 7px;"></div>`;
           }
 
-          // ── Series values ──
+          // ── 各条曲线：名称 / 净值 / 累计 / 日涨跌 四列对齐 ──
+          const rows = [];
+          let drawdown = null;
           for (const p of params) {
             if (p.seriesName === "调仓日" || p.seriesName === "调仓日光晕") continue;
-            if (p.seriesName === "指数净值" && p.data != null) {
-              const v = p.data;
-              const ret = ((v - 1) * 100).toFixed(2);
-              const col = v >= 1 ? UI.positive : UI.danger;
-              html += `净值 <b>${v.toFixed(4)}</b>&nbsp; 累计 <span style="color:${col}">${ret}%</span><br/>`;
-            } else if (p.seriesName === "回撤" && p.data != null) {
-              html += `回撤 <span style="color:${UI.danger}">${(p.data * 100).toFixed(2)}%</span>`;
-            } else if (p.data != null) {
-              const v = Number(p.data);
-              const ret = ((v - 1) * 100).toFixed(2);
-              const col = v >= 1 ? UI.positive : UI.danger;
-              html += `<span style="color:${p.color};display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:5px;"></span> ${escapeHtml(p.seriesName)} ` +
-                `<b>${v.toFixed(4)}</b> <span style="color:${col}">${ret}%</span><br/>`;
+            if (p.seriesName === "回撤") {
+              if (p.data != null && Number.isFinite(Number(p.data))) drawdown = Number(p.data);
+              continue;
             }
+            if (p.data == null) continue;
+            const v = Number(p.data);
+            if (!Number.isFinite(v)) continue;
+            const isNav = p.seriesName === "指数净值";
+            const cumPct = Math.abs(v - 1) < 5e-7 ? 0 : (v - 1) * 100;
+            rows.push({
+              name: p.seriesName,
+              color: p.color || UI.primary,
+              value: v,
+              cumPct,
+              cumColor: cumPct > 0 ? UI.up : cumPct < 0 ? UI.down : UI.subtle,
+              daily: isNav ? dailyChangeOf(values, date) : dailyChangeForPoint(p, date)
+            });
+          }
+
+          if (rows.length) {
+            html += `<table class="bt-tip-table"><thead><tr>` +
+              `<th>名称</th><th>净值</th><th>累计</th><th>日涨跌</th></tr></thead><tbody>`;
+            for (const row of rows) {
+              const daily = formatDailyCell(row.daily);
+              html += `<tr>` +
+                `<td><span class="bt-tip-dot" style="background:${row.color};"></span>` +
+                `<span class="bt-tip-name">${escapeHtml(row.name)}</span></td>` +
+                `<td>${row.value.toFixed(4)}</td>` +
+                `<td style="color:${row.cumColor};">${row.cumPct.toFixed(2)}%</td>` +
+                `<td style="color:${daily.color};">${daily.text}</td>` +
+                `</tr>`;
+            }
+            html += `</tbody></table>`;
+          }
+
+          // 回撤只属于组合，单独放在表尾，避免占一列却没有对应数值
+          if (drawdown != null) {
+            html += `<div class="bt-tip-dd"><span>` +
+              `<span class="bt-tip-dot" style="background:${UI.down};"></span>回撤</span>` +
+              `<b style="color:${UI.down};">${(drawdown * 100).toFixed(2)}%</b></div>`;
           }
           return html;
         }
@@ -1394,28 +1530,28 @@
         {
           type: "category", data: dates, gridIndex: 0,
           axisLabel: { show: false },
-          axisLine: { lineStyle: { color: UI.borderLight } },
+          axisLine: { lineStyle: { color: UI.border } },
           axisTick: { show: false }
         },
         {
           type: "category", data: dates, gridIndex: 1,
           axisLabel: { color: UI.subtle, fontSize: 11 },
-          axisLine: { lineStyle: { color: UI.borderLight } }
+          axisLine: { lineStyle: { color: UI.border } }
         }
       ],
       yAxis: [
         {
           type: "value", scale: true, gridIndex: 0,
-          axisLabel: { color: UI.textMuted },
-          splitLine: { lineStyle: { color: UI.borderLight } }
+          axisLabel: { color: UI.textMuted, fontSize: 11 },
+          splitLine: { lineStyle: { color: UI.border, type: "dashed", opacity: .6 } }
         },
         {
           type: "value", gridIndex: 1, min: "dataMin",
           axisLabel: {
-            color: UI.subtleLight, fontSize: 10,
+            color: UI.subtleLight, fontSize: 11,
             formatter: v => v === 0 ? "0" : (v * 100).toFixed(0) + "%"
           },
-          splitLine: { lineStyle: { color: UI.surfaceSubtle } }
+          splitLine: { lineStyle: { color: UI.border, type: "dashed", opacity: .45 } }
         }
       ],
       dataZoom: [
@@ -1431,25 +1567,25 @@
           type: "slider",
           xAxisIndex: [0, 1],
           filterMode: "filter",
-          height: 18,
+          height: 20,
           left: 52,
           right: 16,
-          bottom: 14,
+          bottom: 12,
           showDetail: false,
           brushSelect: false,
           borderColor: "transparent",
           backgroundColor: UI.surfaceSubtle,
-          fillerColor: "rgba(37,99,235,0.16)",
-          handleSize: "80%",
+          fillerColor: "rgba(59,130,246,0.18)",
+          handleSize: "110%",
           handleStyle: { color: UI.surface, borderColor: UI.subtleLight, borderWidth: 1 },
           moveHandleStyle: { color: UI.primary },
           dataBackground: {
-            lineStyle: { color: UI.borderLight },
+            lineStyle: { color: UI.border },
             areaStyle: { color: UI.borderLight }
           },
           selectedDataBackground: {
             lineStyle: { color: UI.primary },
-            areaStyle: { color: "rgba(37,99,235,0.14)" }
+            areaStyle: { color: "rgba(59,130,246,0.12)" }
           }
         }
       ],
@@ -1462,18 +1598,20 @@
           xAxisIndex: 0, yAxisIndex: 0,
           smooth: true, showSymbol: false,
           lineStyle: { width: 2.2, color: UI.primary },
+          /* 面积填充随主题取色：原先硬编码为亮色主题的深蓝，
+             在深色底上几乎不可见。 */
           areaStyle: {
             color: {
               type: "linear", x: 0, y: 0, x2: 0, y2: 1,
               colorStops: [
-                { offset: 0, color: "rgba(0,87,184,0.2)" },
-                { offset: 1, color: "rgba(0,87,184,0.02)" }
+                { offset: 0, color: hexToRgba(UI.primary, 0.30) },
+                { offset: 1, color: hexToRgba(UI.primary, 0.01) }
               ]
             }
           },
           markLine: markLineData.length ? {
             silent: true, symbol: "none",
-            lineStyle: { color: UI.subtleLight, type: "dashed", width: 1, opacity: 0.45 },
+            lineStyle: { color: UI.subtle, type: "dashed", width: 1, opacity: 0.38 },
             label: { show: false },
             data: markLineData
           } : undefined
@@ -1523,13 +1661,13 @@
           type: "line",
           xAxisIndex: 1, yAxisIndex: 1,
           smooth: false, showSymbol: false,
-          lineStyle: { width: 1.5, color: UI.danger },
+          lineStyle: { width: 1.5, color: UI.down },
           areaStyle: {
             color: {
               type: "linear", x: 0, y: 0, x2: 0, y2: 1,
               colorStops: [
-                { offset: 0, color: "rgba(185,28,28,0.2)" },
-                { offset: 1, color: "rgba(185,28,28,0.03)" }
+                { offset: 0, color: hexToRgba(UI.down, 0.22) },
+                { offset: 1, color: hexToRgba(UI.down, 0.03) }
               ]
             }
           }
@@ -1872,7 +2010,7 @@
             `</div>`;
           html += `<div style="font-size:11px;color:${UI.subtle};margin-bottom:4px;">主持仓轨迹</div>`;
           for (const row of holdings) {
-            const deltaColor = row.delta > 0 ? UI.positive : row.delta < 0 ? UI.danger : UI.subtle;
+            const deltaColor = row.delta > 0 ? UI.up : row.delta < 0 ? UI.down : UI.subtle;
             html += `<div style="display:grid;grid-template-columns:10px minmax(126px,1fr) auto auto;gap:7px;align-items:center;margin:3px 0;">` +
               `<span style="width:8px;height:8px;border-radius:3px;background:${row.color};display:inline-block;"></span>` +
               `<span style="color:${UI.textMuted};overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(row.name)}</span>` +
@@ -1894,8 +2032,12 @@
           return html;
         }
       },
+      /* 两个 grid 与底部时间轴滑条必须共用同一 left/right，且都不能用
+         containLabel（它会让 grid 按各自 y 轴标签宽度内缩，两个轴的
+         标签宽度不同 → 主图与概览轴的绘图区起点错开）。标签所需的
+         宽度已包含在 left: 54 中，标签绘制在绘图区左侧。 */
       grid: [
-        { top: 104, left: 54, right: endLabelRight, height: chartWidth >= 820 ? 278 : 238, containLabel: true },
+        { top: 104, left: 54, right: endLabelRight, height: chartWidth >= 820 ? 278 : 238, containLabel: false },
         { top: chartWidth >= 820 ? 420 : 386, left: 54, right: endLabelRight, height: 50, containLabel: false }
       ],
       xAxis: [
@@ -1970,7 +2112,7 @@
           xAxisIndex: [0, 1],
           filterMode: "none",
           height: 18,
-          left: 52,
+          left: 54,
           right: endLabelRight,
           bottom: 22,
           showDetail: false,
@@ -1987,7 +2129,7 @@
           },
           selectedDataBackground: {
             lineStyle: { color: UI.primary },
-            areaStyle: { color: "rgba(37,99,235,0.14)" }
+            areaStyle: { color: "rgba(59,130,246,0.12)" }
           }
         }
       ],
@@ -2103,16 +2245,21 @@ function renderBacktestNotes(result = null) {
     });
 
     const bmHeaders = bmCodes.map(c => BENCHMARK_NAMES[c] || c);
-    const headers = ["日期", "净值", "累计收益%", ...bmHeaders];
+    const headers = ["日期", "净值", "累计收益%", "日涨跌%", ...bmHeaders];
 
     const rows = navDates.map((date, i) => {
       const value = navValues[i];
       const ret = ((value - 1) * 100).toFixed(2);
+      // 与图上 Tooltip 一致：当天净值相对前一交易日的涨跌幅
+      const prev = i > 0 ? Number(navValues[i - 1]) : NaN;
+      const daily = Number.isFinite(value) && Number.isFinite(prev) && prev !== 0
+        ? (((value - prev) / prev) * 100).toFixed(2)
+        : "";
       const bmVals = bmCodes.map(c => {
         const v = bmMaps[c]?.[date];
         return v != null ? v.toFixed(6) : "";
       });
-      return [date, value.toFixed(6), ret, ...bmVals];
+      return [date, value.toFixed(6), ret, daily, ...bmVals];
     });
 
     // Metrics section at bottom
@@ -2272,7 +2419,7 @@ function renderBacktestNotes(result = null) {
     renderPlans();
     saveToStorage();
     if (overweight.changed) {
-      upsertStatus(`已将解析结果应用到调仓计划（${plan.effectiveDate}），原权重合计 ${overweight.total.toFixed(4)}%，已自动规整到 100%。`);
+      upsertStatus(`已将解析结果应用到调仓计划（${plan.effectiveDate}），原权重合计 ${formatWeightValue(overweight.total)}%，已自动规整到 100%。`);
     } else {
       upsertStatus(`已将解析结果应用到调仓计划（${plan.effectiveDate}）。`);
     }
@@ -2797,7 +2944,7 @@ function renderBacktestNotes(result = null) {
       if (!result.ok) { upsertStatus(result.message); return; }
       renderPlans();
       saveToStorage();
-      upsertStatus(`已将剩余 ${result.remaining.toFixed(4)}% 平均分配到 ${result.assignedCount} 只权重为 0 的成分股。`);
+      upsertStatus(`已将剩余 ${formatWeightValue(result.remaining)}% 平均分配到 ${result.assignedCount} 只权重为 0 的成分股。`);
       return;
     }
 
@@ -2813,6 +2960,13 @@ function renderBacktestNotes(result = null) {
       plan.effectiveDate = actionEl.value;
       renderPlanSelect();
       scheduleSave();
+      return;
+    }
+
+    // 权重列固定显示三位小数，聚焦时全选：直接键入即可整体替换，像表格单元格一样
+    if (action === "edit-cell" && event.type === "focusin" && actionEl.dataset.field === "weight") {
+      const input = actionEl;
+      window.setTimeout(() => { try { input.select(); } catch (e) { /* 部分浏览器不支持 number 全选 */ } }, 0);
       return;
     }
 
@@ -2998,6 +3152,7 @@ function renderBacktestNotes(result = null) {
   document.getElementById("plansContainer").addEventListener("click", handlePlanEvents);
   document.getElementById("plansContainer").addEventListener("input", handlePlanEvents);
   document.getElementById("plansContainer").addEventListener("change", handlePlanEvents);
+  document.getElementById("plansContainer").addEventListener("focusin", handlePlanEvents);
 
   document.getElementById("advToggle").addEventListener("click", () => {
     const body = document.getElementById("advBody");

@@ -2,3 +2,5 @@
 .alma-snapshots
 .DS_Store
 .kiro/
+# 本地调试产物：截图、探针页、日志，以及其中夹带的前端源码副本
+.logs/
