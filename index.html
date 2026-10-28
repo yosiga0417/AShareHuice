@@ -16,7 +16,7 @@
   </script>
   <!-- ECharts 已本地化（vendor/echarts.min.js，v5.6.0，Apache-2.0），离线可用，无需外部 CDN -->
   <script src="vendor/echarts.min.js"></script>
-  <link rel="stylesheet" href="styles.css?v=20261027-ma2" />
+  <link rel="stylesheet" href="styles.css?v=20261029-fullscreen1" />
 </head>
 <body>
 
@@ -26,6 +26,8 @@
 <!-- ── Lucide 图标精灵（内联，无外部依赖） ── -->
 <svg xmlns="http://www.w3.org/2000/svg" style="display:none" aria-hidden="true">
   <symbol id="i-chart-line" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v16a2 2 0 0 0 2 2h16"/><path d="m19 9-5 5-4-4-3 3"/></symbol>
+  <symbol id="i-maximize" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H3v5M16 3h5v5M3 16v5h5M21 16v5h-5"/></symbol>
+  <symbol id="i-minimize" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8h5V3M21 8h-5V3M8 21v-5H3M16 21v-5h5"/></symbol>
   <symbol id="i-save" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15.2 3a2 2 0 0 1 1.4.6l3.8 3.8a2 2 0 0 1 .6 1.4V19a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z"/><path d="M17 21v-7a1 1 0 0 0-1-1H8a1 1 0 0 0-1 1v7"/><path d="M7 3v4a1 1 0 0 0 1 1h7"/></symbol>
   <symbol id="i-clock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></symbol>
   <symbol id="i-panel-left-open" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/><path d="m13 15 3-3-3-3"/></symbol>
@@ -383,6 +385,9 @@
           <button id="exportImgBtn" type="button" class="toolbar-btn" disabled title="保存图表为 PNG">
             <svg class="icon"><use href="#i-image-down"/></svg><span>截图</span>
           </button>
+          <button type="button" class="toolbar-btn" data-chart-fullscreen="panel-nav" aria-controls="panel-nav" aria-pressed="false" title="全屏显示图表">
+            <svg class="icon" aria-hidden="true"><use href="#i-maximize"/></svg><span>全屏</span>
+          </button>
         </div>
       </div>
       <div class="view-hint is-hidden" id="viewHint"></div>
@@ -391,6 +396,14 @@
 
     <!-- 持仓演变 -->
     <section class="tab-panel" data-panel="holdings" role="tabpanel" id="panel-holdings" aria-labelledby="tab-holdings">
+      <div class="chart-toolbar">
+        <span class="chart-toolbar-title">持仓演变</span>
+        <div class="toolbar-actions">
+          <button type="button" class="toolbar-btn" data-chart-fullscreen="panel-holdings" aria-controls="panel-holdings" aria-pressed="false" title="全屏显示持仓演变图">
+            <svg class="icon" aria-hidden="true"><use href="#i-maximize"/></svg><span>全屏</span>
+          </button>
+        </div>
+      </div>
       <div id="holdingsChart" class="is-hidden"></div>
     </section>
 
@@ -1603,7 +1616,7 @@
 })();
 </script>
 
-<script src="app.js?v=20261029-ohlc1"></script>
+<script src="app.js?v=20261029-fullscreen1"></script>
 
 <script>
 /* ════════════════════════════════════════════════════════════════

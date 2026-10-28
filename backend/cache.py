@@ -10,6 +10,7 @@ import threading
 import time
 from typing import Dict, Iterable, List, Optional, Tuple
 
+import numpy as np
 import pandas as pd
 
 from backend.models import FileSignature
@@ -199,7 +200,8 @@ def _atomic_write_feather(path: Path, frame: pd.DataFrame) -> None:
     )
     os.close(fd)
     try:
-        frame.to_feather(tmp_name)
+        # Lossless compression; old LZ4 Feather files remain readable.
+        frame.to_feather(tmp_name, compression="zstd", compression_level=1)
         # Flush the payload before the rename: an unflushed rename can survive
         # a power loss while the data blocks do not, leaving an empty/corrupt
         # Feather file behind.
@@ -274,7 +276,10 @@ def merge_price_series(base: pd.Series, incoming: pd.Series, skip_normalize: boo
 
 
 def load_cached_series(cache_path: Path) -> pd.Series:
-    return _load_cached_series(str(cache_path), file_signature(cache_path))
+    # The LRU owns the canonical object; callers get a separate copy so an
+    # in-place edit (e.g. ``series.iloc[0] = ...`` in analysis code) cannot
+    # poison every later cache hit.
+    return _load_cached_series(str(cache_path), file_signature(cache_path)).copy()
 
 
 @lru_cache(maxsize=1024)
@@ -282,23 +287,22 @@ def _load_cached_series(cache_path_str: str, signature: FileSignature) -> pd.Ser
     if signature is None:
         return pd.Series(dtype="float64", name="close")
     try:
-        df = pd.read_feather(cache_path_str)
+        # Reading close from an OHLC file must not deserialize unused columns.
+        df = pd.read_feather(cache_path_str, columns=["date", "close"], use_threads=False)
+        if not {"date", "close"}.issubset(df.columns):
+            return pd.Series(dtype="float64", name="close")
     except Exception:
         return pd.Series(dtype="float64", name="close")
     if df.empty:
         return pd.Series(dtype="float64", name="close")
     # Feather preserves dtypes: date is datetime64, close is float64
-    valid_mask = df["date"].notna() & df["close"].notna()
-    if not valid_mask.any():
-        return pd.Series(dtype="float64", name="close")
-    series = pd.Series(
-        df.loc[valid_mask, "close"].to_numpy(dtype="float64", copy=False),
-        index=pd.DatetimeIndex(df.loc[valid_mask, "date"]),
-        name="close",
-    )
+    values = df["close"].to_numpy(dtype="float64", copy=False)
+    index = pd.DatetimeIndex(df["date"])
+    valid_mask = index.notna() & ~np.isnan(values)
+    series = pd.Series(values[valid_mask], index=index[valid_mask], name="close")
     if series.index.has_duplicates:
         series = series[~series.index.duplicated(keep="last")]
-    return series.sort_index()
+    return series if series.index.is_monotonic_increasing else series.sort_index()
 
 
 def save_cached_series(cache_path: Path, series: pd.Series) -> None:
@@ -306,6 +310,21 @@ def save_cached_series(cache_path: Path, series: pd.Series) -> None:
     df = clean_series.rename("close").reset_index()
     df.columns = ["date", "close"]
     _atomic_write_feather(cache_path, df)
+
+
+def _is_normalized_ohlc(frame: pd.DataFrame) -> bool:
+    if tuple(frame.columns) != OHLC_COLUMNS or not isinstance(frame.index, pd.DatetimeIndex):
+        return False
+    index = frame.index
+    if index.hasnans or not index.is_monotonic_increasing or index.has_duplicates:
+        return False
+    if not index.equals(index.normalize()) or any(dtype != np.dtype("float64") for dtype in frame.dtypes):
+        return False
+    values = frame.to_numpy(copy=False)
+    if np.isnan(values).any():
+        return False
+    open_, high, low, close = values.T
+    return bool(((high >= open_) & (high >= close) & (low <= open_) & (low <= close)).all())
 
 
 def normalize_ohlc_frame(frame: pd.DataFrame) -> pd.DataFrame:
@@ -317,9 +336,17 @@ def normalize_ohlc_frame(frame: pd.DataFrame) -> pd.DataFrame:
     empty = pd.DataFrame(columns=list(OHLC_COLUMNS), dtype="float64")
     if frame is None or len(frame) == 0:
         return empty
+    if _is_normalized_ohlc(frame):
+        out = frame.copy()
+        out.index = pd.DatetimeIndex(out.index.values, name=out.index.name)
+        return out
     df = frame.copy()
     if "date" in df.columns:
         df = df.set_index("date")
+    # Feather preserves dtypes and index ordering. Validate cheaply before
+    # falling back to the full repair path used for external/malformed data.
+    if _is_normalized_ohlc(df):
+        return df
     df.index = pd.to_datetime(df.index, errors="coerce").normalize()
     close = pd.to_numeric(df["close"], errors="coerce") if "close" in df.columns else pd.Series(
         [float("nan")] * len(df), index=df.index, dtype="float64"
@@ -352,10 +379,10 @@ def _load_cached_ohlc_frame(cache_path_str: str, signature: FileSignature) -> pd
     if signature is None:
         return pd.DataFrame(columns=list(OHLC_COLUMNS), dtype="float64")
     try:
-        df = pd.read_feather(cache_path_str)
+        df = pd.read_feather(cache_path_str, use_threads=False)
+        return normalize_ohlc_frame(df)
     except Exception:
         return pd.DataFrame(columns=list(OHLC_COLUMNS), dtype="float64")
-    return normalize_ohlc_frame(df)
 
 
 def load_cached_ohlc_frame(cache_path: Path) -> pd.DataFrame:
@@ -468,13 +495,18 @@ def _load_cached_ranges(
 
 
 def load_cached_fallback_flag(meta_path: Path) -> bool:
+    return _load_cached_fallback_flag(str(meta_path), file_signature(meta_path))
+
+
+@lru_cache(maxsize=1024)
+def _load_cached_fallback_flag(meta_path_str: str, signature: FileSignature) -> bool:
+    if signature is None:
+        return False
     try:
-        if meta_path.exists():
-            payload = json.loads(meta_path.read_text(encoding="utf-8"))
-            return bool(payload.get("has_fallback", False))
+        payload = json.loads(Path(meta_path_str).read_text(encoding="utf-8"))
+        return bool(payload.get("has_fallback", False))
     except Exception:
-        pass
-    return False
+        return False
 
 
 def save_cached_ranges(
@@ -646,8 +678,13 @@ def expand_fetch_range(
 def slice_price_series(series: pd.Series, start_date: date, end_date: date) -> pd.Series:
     if series is None or len(series) == 0:
         return pd.Series(dtype="float64", name="close")
-    mask = (series.index >= pd.Timestamp(start_date)) & (series.index <= pd.Timestamp(end_date))
-    out = series.loc[mask]
+    if series.index.is_monotonic_increasing and not series.index.has_duplicates:
+        left = series.index.searchsorted(pd.Timestamp(start_date), side="left")
+        right = series.index.searchsorted(pd.Timestamp(end_date), side="right")
+        out = series.iloc[left:right]
+    else:
+        mask = (series.index >= pd.Timestamp(start_date)) & (series.index <= pd.Timestamp(end_date))
+        out = series.loc[mask]
     if out.empty:
         return pd.Series(dtype="float64", name="close")
     out = out.dropna()

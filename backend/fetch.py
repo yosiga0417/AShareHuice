@@ -71,6 +71,10 @@ _silence_tqdm_progress_bars()
 
 from backend.models import DEFAULT_BENCHMARK_CODES, StageProgressCallback
 FETCH_WORKER_LIMIT = read_positive_int_env("BACKTEST_FETCH_WORKERS", DEFAULT_FETCH_WORKERS)
+# Thread pools are per backtest task. With BACKTEST_MAX_CONCURRENT tasks this
+# used to multiply into N x workers concurrent AKShare calls; cap the actual
+# outbound requests globally while keeping per-task progress/threading intact.
+FETCH_REMOTE_SEMAPHORE = threading.BoundedSemaphore(FETCH_WORKER_LIMIT)
 INTRADAY_QUOTE_TTL_SECONDS = read_positive_int_env("BACKTEST_INTRADAY_QUOTE_TTL_SECONDS", 120)
 AFTER_CLOSE_QUOTE_TTL_SECONDS = read_positive_int_env("BACKTEST_AFTER_CLOSE_QUOTE_TTL_SECONDS", 900)
 CHINA_TZ = ZoneInfo("Asia/Shanghai")
@@ -262,13 +266,14 @@ def try_fetch_hist(symbol: str, beg: str, end: str, max_retry: int = 2) -> pd.Da
     last_error: Optional[Exception] = None
     for attempt in range(max_retry):
         try:
-            hist = ak.stock_zh_a_hist(
-                symbol=symbol,
-                period="daily",
-                start_date=beg,
-                end_date=end,
-                adjust="qfq",
-            )
+            with FETCH_REMOTE_SEMAPHORE:
+                hist = ak.stock_zh_a_hist(
+                    symbol=symbol,
+                    period="daily",
+                    start_date=beg,
+                    end_date=end,
+                    adjust="qfq",
+                )
             if hist is None or hist.empty:
                 raise ValueError("返回数据为空")
             return hist
@@ -284,12 +289,13 @@ def try_fetch_hist_tx(symbol: str, beg: str, end: str, max_retry: int = 2) -> pd
     last_error: Optional[Exception] = None
     for attempt in range(max_retry):
         try:
-            hist = ak.stock_zh_a_hist_tx(
-                symbol=tx_symbol,
-                start_date=beg,
-                end_date=end,
-                adjust="qfq",
-            )
+            with FETCH_REMOTE_SEMAPHORE:
+                hist = ak.stock_zh_a_hist_tx(
+                    symbol=tx_symbol,
+                    start_date=beg,
+                    end_date=end,
+                    adjust="qfq",
+                )
             if hist is None or hist.empty:
                 raise ValueError("返回数据为空")
             return hist
@@ -333,18 +339,22 @@ def _store_cached_stock_ohlc_locked(
     range_end: date,
 ) -> None:
     """Persist an OHLC slice while the caller already owns the symbol lock."""
-    if frame is None or frame.empty:
+    _store_cached_stock_ohlc_slices_locked(symbol, [(frame, range_start, range_end)])
+
+
+def _store_cached_stock_ohlc_slices_locked(
+    symbol: str, slices: List[Tuple[pd.DataFrame, date, date]]
+) -> None:
+    slices = [(frame, start, end) for frame, start, end in slices if frame is not None and not frame.empty]
+    if not slices:
         return
     cached_frame = load_cached_stock_ohlc(symbol)
-    cached_ranges = load_cached_stock_ohlc_ranges(symbol)
-    if cached_ranges and cached_frame.empty:
-        # Metadata claims cached data but the Feather file is unreadable; do not
-        # let the stale range mark the gap as already fetched.
-        cached_ranges = []
-    merged = merge_ohlc_frames(cached_frame, frame)
+    cached_ranges = load_cached_stock_ohlc_ranges(symbol) if not cached_frame.empty else []
+    # Merge all missing slices and write the full file only once per symbol.
+    merged = normalize_ohlc_frame(pd.concat([cached_frame] + [frame for frame, _, _ in slices]))
     save_cached_stock_ohlc(symbol, merged)
     save_cached_stock_ohlc_ranges(
-        symbol, normalize_cached_ranges(cached_ranges + [(range_start, range_end)])
+        symbol, cached_ranges + [(start, end) for _, start, end in slices]
     )
 
 
@@ -363,6 +373,9 @@ def fetch_symbol_close_series(
         cached_series = load_cached_stock_series(symbol)
         cached_ranges = load_cached_stock_ranges(symbol)
         cached_fallback = load_cached_stock_fallback(symbol)
+        if cached_series.empty:
+            cached_ranges = []
+        ohlc_slices: List[Tuple[pd.DataFrame, date, date]] = []
         fetched_sources: List[str] = []
         has_new_fallback = cached_fallback
         cache_dirty = False
@@ -371,20 +384,22 @@ def fetch_symbol_close_series(
             missing_ranges = compute_missing_ranges(request_start, historical_end, cached_ranges)
             for gap_start, gap_end in missing_ranges:
                 fetch_start, fetch_end = expand_fetch_range(gap_start, gap_end, cached_ranges)
-                gap_series, gap_ohlc, source = fetch_symbol_close_series_remote(
-                    symbol, fetch_start, fetch_end
-                )
+                # An OHLC-only client may already have fetched this interval.
+                # Reuse its close column instead of a second network request.
+                ohlc_ranges = load_cached_stock_ohlc_ranges(symbol)
+                reusable = not compute_missing_ranges(fetch_start, fetch_end, ohlc_ranges)
+                gap_ohlc = load_cached_stock_ohlc(symbol) if reusable else pd.DataFrame()
+                if not gap_ohlc.empty:
+                    gap_ohlc = slice_ohlc_frame(gap_ohlc, fetch_start, fetch_end)
+                if not gap_ohlc.empty:
+                    gap_series, source = gap_ohlc["close"], "cache"
+                else:
+                    gap_series, gap_ohlc, source = fetch_symbol_close_series_remote(
+                        symbol, fetch_start, fetch_end
+                    )
+                    ohlc_slices.append((gap_ohlc, gap_start, gap_end))
                 cached_series = merge_price_series(cached_series, gap_series, skip_normalize=True)
                 cached_ranges = normalize_cached_ranges(cached_ranges + [(gap_start, gap_end)])
-                # The same AKShare response already contains open/high/low, so
-                # populate the candlestick cache here instead of requesting the
-                # symbol a second time. Candles are auxiliary: a cache write
-                # failure must never invalidate an otherwise valid close fetch
-                # (e.g. read-only disk or a full disk).
-                try:
-                    _store_cached_stock_ohlc_locked(symbol, gap_ohlc, gap_start, gap_end)
-                except Exception:
-                    pass
                 fetched_sources.append(source)
                 if source == "stock_zh_a_hist_tx":
                     has_new_fallback = True
@@ -428,6 +443,11 @@ def fetch_symbol_close_series(
                             ttl_seconds=today_quote_ttl_seconds(now),
                             source=source,
                         )
+                # Some providers return the previous bar before today's daily
+                # bar is published. Never mark today permanently cached then.
+                today_series = slice_price_series(today_series, today, today)
+                if today_series.empty:
+                    raise RuntimeError("当天收盘价尚未发布")
                 if source:
                     fetched_sources.append(source)
                 if source == "stock_zh_a_hist_tx":
@@ -437,10 +457,7 @@ def fetch_symbol_close_series(
                 if persist_today:
                     cached_series = merge_price_series(cached_series, today_series, skip_normalize=True)
                     cached_ranges = normalize_cached_ranges(cached_ranges + [(today, today)])
-                    try:
-                        _store_cached_stock_ohlc_locked(symbol, today_ohlc, today, today)
-                    except Exception:
-                        pass
+                    ohlc_slices.append((today_ohlc, today, today))
                     result_series = cached_series
                     cache_dirty = True
                     ranges_dirty = True
@@ -450,6 +467,12 @@ def fetch_symbol_close_series(
                 refresh_error = exc
         else:
             result_series = cached_series
+        # Candles are auxiliary; an OHLC write failure must not abort the
+        # valid close-price result. Each symbol is flushed just once.
+        try:
+            _store_cached_stock_ohlc_slices_locked(symbol, ohlc_slices)
+        except Exception:
+            pass
         if cache_dirty:
             save_cached_stock_series(symbol, cached_series)
         if ranges_dirty or has_new_fallback != cached_fallback:
@@ -597,6 +620,9 @@ def fetch_symbol_ohlc_frame(
                         )
                 else:
                     today_frame, source = cached_today
+                today_frame = slice_ohlc_frame(today_frame, today, today)
+                if today_frame.empty:
+                    raise RuntimeError("当天开高低收尚未发布")
                 if source:
                     fetched_sources.append(source)
                 if persist_today:
@@ -748,7 +774,8 @@ def fetch_benchmark_close_series_remote(
     last_error: Optional[Exception] = None
     for attempt in range(2):
         try:
-            df = ak.index_zh_a_hist(symbol=code, period="daily", start_date=beg, end_date=end)
+            with FETCH_REMOTE_SEMAPHORE:
+                df = ak.index_zh_a_hist(symbol=code, period="daily", start_date=beg, end_date=end)
             if df is None or df.empty:
                 raise ValueError("返回数据为空")
             return extract_date_close_series(df)
@@ -758,7 +785,8 @@ def fetch_benchmark_close_series_remote(
                 time.sleep(0.35)
     prefix = "sh" if code.startswith(("0", "9")) else "sz"
     try:
-        df = ak.stock_zh_index_daily(symbol=f"{prefix}{code}")
+        with FETCH_REMOTE_SEMAPHORE:
+            df = ak.stock_zh_index_daily(symbol=f"{prefix}{code}")
         if df is None or df.empty:
             raise ValueError("返回数据为空")
         df = df.rename(columns={"date": "日期", "close": "收盘"})
@@ -785,6 +813,8 @@ def fetch_benchmark_nav(
     with get_cache_resource_lock("benchmark", code):
         cached_series = load_cached_benchmark_series(code)
         cached_ranges = load_cached_benchmark_ranges(code)
+        if cached_series.empty:
+            cached_ranges = []
         cache_dirty = False
         ranges_dirty = False
         if request_start <= historical_end:
@@ -815,6 +845,9 @@ def fetch_benchmark_nav(
                     )
             else:
                 today_series, _source = cached_today
+            today_series = slice_price_series(today_series, today, today)
+            if today_series.empty:
+                raise RuntimeError("当天基准行情尚未发布")
             if persist_today:
                 cached_series = merge_price_series(cached_series, today_series, skip_normalize=True)
                 cached_ranges = normalize_cached_ranges(cached_ranges + [(today, today)])

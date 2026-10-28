@@ -29,6 +29,7 @@
     // 净值图时间轴缩放区间（百分比 {start,end}）；null = 未缩放（全区间）。
     // 三个视图（净值 / 回撤 / 超额收益）共用同一 ECharts 实例，故统一存放于此。
     navZoom: null,
+    holdingsZoom: null,
     nextPlanId: 1,
     nextRowId: 1,
     lastResult: null,
@@ -1288,6 +1289,7 @@
   // 新的回测结果到来时回到全区间，避免沿用上一次回测的区间比例。
   function resetNavZoom() {
     state.navZoom = null;
+    state.holdingsZoom = null;
   }
 
   // 重绘后把 state.navZoom 回填到图表上（未缩放时即 0-100 全区间）。
@@ -1715,6 +1717,8 @@
   // ── Holdings evolution trend chart ──
   function renderHoldingsChart(holdingsEvolution = [], rebalanceDates = []) {
     const container = document.getElementById("holdingsChart");
+    // .has-chart 控制「持仓演变」工具栏：没有数据时不必露出只有全屏按钮的空栏。
+    const panel = document.getElementById("panel-holdings");
     const normalizedHoldings = (holdingsEvolution || []).map(normalizeHoldingSeries);
     if (!normalizedHoldings.length) {
       if (holdingsChart) {
@@ -1723,28 +1727,46 @@
       }
       container.innerHTML = "";
       container.classList.add("is-hidden");
+      panel?.classList.remove("has-chart");
       return;
     }
 
     container.classList.remove("is-hidden");
+    panel?.classList.add("has-chart");
 
     const dates = normalizedHoldings[0]?.dates || [];
     const dateIndexMap = new Map(dates.map((d, i) => [d, i]));
     if (!dates.length) {
       container.classList.add("is-hidden");
+      panel?.classList.remove("has-chart");
       return;
     }
 
     const chartWidth = container.getBoundingClientRect().width || 820;
     const lineLimit = chartWidth >= 1100 ? 10 : chartWidth >= 820 ? 8 : 6;
     const showEndLabels = chartWidth >= 760;
-    const chartHeight = chartWidth >= 820 ? 540 : 500;
-    container.style.height = `${chartHeight}px`;
+    const fullscreen = !!document.getElementById("panel-holdings")?.classList.contains("chart-fullscreen");
+    const normalHeight = chartWidth >= 820 ? 540 : 500;
+    container.style.height = fullscreen ? "" : `${normalHeight}px`;
+    const chartHeight = fullscreen ? Math.max(320, container.getBoundingClientRect().height) : normalHeight;
+    // 全屏时底部概览轴最多占 30% 高度，其余留给主图，避免主图被压成一条窄带。
+    const overviewTop = fullscreen
+      ? Math.max(184, chartHeight - Math.max(110, Math.min(180, chartHeight * 0.3)))
+      : chartWidth >= 820 ? 420 : 386;
+    const mainHeight = fullscreen ? Math.max(48, overviewTop - 156) : chartWidth >= 820 ? 278 : 238;
 
     try {
       if (!holdingsChart) {
         container.innerHTML = "";
         holdingsChart = echarts.init(container);
+        holdingsChart.on("datazoom", payload => {
+          const item = payload?.batch?.[0] || payload || {};
+          const start = Number(item.start);
+          const end = Number(item.end);
+          if (Number.isFinite(start) && Number.isFinite(end)) {
+            state.holdingsZoom = { start, end };
+          }
+        });
       } else {
         holdingsChart.resize();
       }
@@ -2065,8 +2087,8 @@
          标签宽度不同 → 主图与概览轴的绘图区起点错开）。标签所需的
          宽度已包含在 left: 54 中，标签绘制在绘图区左侧。 */
       grid: [
-        { top: 104, left: 54, right: endLabelRight, height: chartWidth >= 820 ? 278 : 238, containLabel: false },
-        { top: chartWidth >= 820 ? 420 : 386, left: 54, right: endLabelRight, height: 50, containLabel: false }
+        { top: 104, left: 54, right: endLabelRight, height: mainHeight, containLabel: false },
+        { top: overviewTop, left: 54, right: endLabelRight, height: 50, containLabel: false }
       ],
       xAxis: [
         {
@@ -2179,6 +2201,8 @@
         }] : [])
       ]
     }, { notMerge: true });
+    const zoom = state.holdingsZoom || { start: 0, end: 100 };
+    holdingsChart.dispatchAction({ type: "dataZoom", start: zoom.start, end: zoom.end });
   }
 
   // Re-render chart using stored result (called when benchmark/comparison checkboxes change)
@@ -3299,6 +3323,146 @@ function renderBacktestNotes(result = null) {
   document.getElementById("comparisonBar").addEventListener("change", event => {
     if (event.target.classList.contains("comp-check")) debouncedChartRefresh();
   });
+
+  // 全屏状态同时覆盖原生 API 和不支持/拒绝原生 API 时的页面覆盖层。
+  let fullscreenPanel = null;
+  let fullscreenButton = null;
+  let fullscreenMode = null;
+  let fullscreenModalHome = null;
+  let fullscreenResizeFrame = null;
+
+  function resizeFullscreenCharts() {
+    if (fullscreenResizeFrame !== null) cancelAnimationFrame(fullscreenResizeFrame);
+    fullscreenResizeFrame = requestAnimationFrame(() => {
+      fullscreenResizeFrame = null;
+      if (state.chart) state.chart.resize();
+      const container = document.getElementById("holdingsChart");
+      if (container.getBoundingClientRect().width && state.lastResult?.holdings_evolution?.length) {
+        renderHoldingsChart(state.lastResult.holdings_evolution, state.lastResult.applied_rebalance_dates || []);
+      } else if (holdingsChart) {
+        holdingsChart.resize();
+      }
+    });
+  }
+
+  function nativeFullscreenElement() {
+    return document.fullscreenElement || document.webkitFullscreenElement;
+  }
+
+  function clearChartFullscreen() {
+    if (!fullscreenPanel) return;
+    fullscreenPanel.classList.remove("chart-fullscreen");
+    document.body.classList.remove("chart-fullscreen-open");
+    fullscreenButton.setAttribute("aria-pressed", "false");
+    fullscreenButton.title = fullscreenButton.dataset.fullscreenTitle || "全屏显示图表";
+    fullscreenButton.querySelector("span").textContent = "全屏";
+    fullscreenButton.querySelector("use").setAttribute("href", "#i-maximize");
+    // 命名弹窗在原生全屏时也必须位于全屏元素内部。
+    if (fullscreenModalHome) {
+      const modal = document.getElementById("comparisonNameModal");
+      fullscreenModalHome.parent.insertBefore(modal, fullscreenModalHome.next);
+      fullscreenModalHome = null;
+    }
+    const button = fullscreenButton;
+    fullscreenPanel = fullscreenButton = fullscreenMode = null;
+    button.focus({ preventScroll: true });
+    resizeFullscreenCharts();
+  }
+
+  async function exitChartFullscreen() {
+    const exit = document.exitFullscreen || document.webkitExitFullscreen;
+    if (nativeFullscreenElement() === fullscreenPanel && exit) {
+      try {
+        await exit.call(document);
+      } catch (error) {
+        // 若浏览器仍处于全屏，保留退出入口，允许再次点击或按 Esc。
+        if (nativeFullscreenElement() === fullscreenPanel) return;
+      }
+    }
+    clearChartFullscreen();
+  }
+
+  document.querySelectorAll("[data-chart-fullscreen]").forEach(button => {
+    button.dataset.fullscreenTitle = button.title;
+    button.addEventListener("click", async () => {
+      if (fullscreenPanel) {
+        await exitChartFullscreen();
+        return;
+      }
+      const panel = document.getElementById(button.dataset.chartFullscreen);
+      if (!panel) return;
+      fullscreenPanel = panel;
+      fullscreenButton = button;
+      fullscreenMode = "pending";
+      panel.classList.add("chart-fullscreen");
+      document.body.classList.add("chart-fullscreen-open");
+      button.setAttribute("aria-pressed", "true");
+      button.title = "退出全屏（Esc）";
+      button.querySelector("span").textContent = "退出全屏";
+      button.querySelector("use").setAttribute("href", "#i-minimize");
+      const modal = document.getElementById("comparisonNameModal");
+      if (modal && !panel.contains(modal)) {
+        fullscreenModalHome = { parent: modal.parentNode, next: modal.nextSibling };
+        panel.appendChild(modal);
+      }
+      resizeFullscreenCharts();
+      const request = panel.requestFullscreen || panel.webkitRequestFullscreen;
+      try {
+        if (request) await request.call(panel);
+      } catch (error) {
+        // 内嵌页面/移动浏览器可能拒绝 API，保留页面内全屏。
+      }
+      if (fullscreenPanel === panel) {
+        fullscreenMode = nativeFullscreenElement() === panel ? "native" : "page";
+        resizeFullscreenCharts();
+        // 进入全屏后容器高度由 CSS flex 接管，下一帧按真实高度重算持仓图网格。
+        requestAnimationFrame(resizeFullscreenCharts);
+      }
+    });
+  });
+
+  function syncChartFullscreen() {
+    if (!fullscreenPanel) return;
+    if (nativeFullscreenElement() === fullscreenPanel) {
+      fullscreenMode = "native";
+      resizeFullscreenCharts();
+    } else if (fullscreenMode === "native") {
+      clearChartFullscreen();
+    }
+  }
+  document.addEventListener("fullscreenchange", syncChartFullscreen);
+  document.addEventListener("webkitfullscreenchange", syncChartFullscreen);
+  document.addEventListener("keydown", event => {
+    if (!fullscreenPanel || event.defaultPrevented) return;
+    const modal = document.getElementById("comparisonNameModal");
+    if (modal && !modal.classList.contains("is-hidden")) return;
+    if (event.key === "Escape") {
+      if (fullscreenMode === "native") return; // 交给浏览器退出原生全屏
+      // 均线设置浮层先吃掉 Esc（它的监听在 index.html，捕获阶段才能抢在它前面判断）。
+      const maPanel = document.getElementById("maPanel");
+      if (maPanel && !maPanel.classList.contains("is-hidden")) return;
+      event.preventDefault();
+      exitChartFullscreen();
+    } else if (event.key === "Tab") {
+      const controls = Array.from(fullscreenPanel.querySelectorAll('button, input, select, a[href], [tabindex]:not([tabindex="-1"])'))
+        .filter(el => !el.disabled && el.getClientRects().length);
+      const first = controls[0];
+      const last = controls[controls.length - 1];
+      if (first && event.shiftKey && (document.activeElement === first || !fullscreenPanel.contains(document.activeElement))) {
+        event.preventDefault();
+        last.focus();
+      } else if (last && !event.shiftKey && (document.activeElement === last || !fullscreenPanel.contains(document.activeElement))) {
+        event.preventDefault();
+        first.focus();
+      }
+    }
+  }, true);
+  if (typeof ResizeObserver !== "undefined") {
+    const observer = new ResizeObserver(() => {
+      if (fullscreenPanel) resizeFullscreenCharts();
+    });
+    ["navChart", "holdingsChart"].forEach(id => observer.observe(document.getElementById(id)));
+  }
 
   let resizeTimer = null;
   window.addEventListener("resize", () => {

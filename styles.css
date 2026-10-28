@@ -1177,6 +1177,14 @@ body.is-running .results-empty { display: none !important; }
   gap: 7px;
   margin-left: auto;
 }
+.chart-toolbar-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+  letter-spacing: .04em;
+}
+/* 没有持仓数据时不必显示只有「全屏」的空工具栏 */
+#panel-holdings:not(.has-chart) .chart-toolbar { display: none; }
 .toolbar-btn {
   display: inline-flex; align-items: center; gap: 6px;
   padding: 6px 12px;
@@ -1261,6 +1269,38 @@ body.is-running .results-empty { display: none !important; }
 }
 #navChart { height: clamp(420px, 58vh, 660px); }
 #holdingsChart { min-height: 360px; }
+
+/* 整个面板进入全屏，工具栏保持可用，图表占满剩余空间。 */
+.tab-panel.chart-fullscreen {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  width: 100%;
+  height: 100vh;
+  height: 100dvh;
+  padding: 16px;
+  margin: 0;
+  background: var(--bg);
+  overflow: auto;
+  animation: none;
+  transform: none;
+}
+.chart-fullscreen .chart-toolbar,
+.chart-fullscreen .view-hint { flex: 0 0 auto; }
+.tab-panel.chart-fullscreen > #navChart,
+.tab-panel.chart-fullscreen > #holdingsChart {
+  flex: 1 1 0;
+  height: 0 !important;
+  min-height: 240px;
+}
+.chart-fullscreen::backdrop { background: var(--bg); }
+body.chart-fullscreen-open #comparisonNameModal { z-index: 1100; }
+@media (max-width: 560px) {
+  .tab-panel.chart-fullscreen { padding: 8px; }
+}
 
 /* ── 图表 Tooltip：表格化对齐 ──
    Tooltip 底色在深浅主题下都是深色，因此表头/分隔线用固定的半透明浅色，
