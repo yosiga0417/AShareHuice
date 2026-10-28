@@ -13,6 +13,7 @@ from backend.engine import (
     normalize_weight_map,
     normalize_weights_exact,
     prepare_nav_data,
+    prepare_ohlc_data,
 )
 from backend.models import CleanPlan
 
@@ -106,6 +107,84 @@ class NavComputationTests(unittest.TestCase):
         # After day1 weights drift to A=0.55/1.025, B=0.475/1.025.
         # Day2: A 10.5/11, B 20.5/19 -> portfolio value 0.55*0.954545 + 0.475*1.078947 = 1.0375
         self.assertAlmostEqual(nav.iloc[2], 1.0375, places=9)
+
+    def test_nav_ohlc_close_matches_nav_and_candles_are_valid(self) -> None:
+        close_df = self._close_df()
+        open_df = pd.DataFrame(
+            {"A": [10.0, 10.8, 11.1, 10.4, 11.6], "B": [20.0, 19.6, 18.8, 20.6, 21.0]},
+            index=close_df.index,
+        )
+        high_df = pd.DataFrame(
+            {"A": [10.2, 11.2, 11.4, 11.7, 12.2], "B": [20.3, 19.8, 20.6, 21.2, 21.4]},
+            index=close_df.index,
+        )
+        low_df = pd.DataFrame(
+            {"A": [9.8, 10.5, 10.2, 10.3, 11.4], "B": [19.7, 18.9, 18.6, 20.1, 19.8]},
+            index=close_df.index,
+        )
+        plan = make_plan("2024-01-01", {"A": 0.5, "B": 0.5})
+        nav, _, _, _, _ = compute_all_mode_navs(
+            *prepare_nav_data(close_df),
+            [plan],
+            [],
+            comparison_rebalance_dates={},
+            ohlc_data=prepare_ohlc_data(open_df, high_df, low_df, close_df),
+        )
+        ohlc = nav.attrs.get("nav_ohlc")
+        self.assertIsNotNone(ohlc)
+        assert ohlc is not None
+        self.assertEqual(ohlc["dates"], [str(d.date()) for d in close_df.index])
+        np.testing.assert_allclose(ohlc["close"], nav.values, rtol=1e-12)
+        # First bar is the index base 1.0.
+        self.assertEqual([ohlc[key][0] for key in ("open", "high", "low", "close")], [1.0, 1.0, 1.0, 1.0])
+        # Day 1 with 50/50 weights: open 1.03, high 1.055, low 0.9975, close 1.025.
+        self.assertAlmostEqual(ohlc["open"][1], 1.03, places=9)
+        self.assertAlmostEqual(ohlc["high"][1], 1.055, places=9)
+        self.assertAlmostEqual(ohlc["low"][1], 0.9975, places=9)
+        self.assertAlmostEqual(ohlc["close"][1], 1.025, places=9)
+        for idx in range(len(ohlc["dates"])):
+            self.assertGreaterEqual(ohlc["high"][idx], max(ohlc["open"][idx], ohlc["close"][idx]))
+            self.assertLessEqual(ohlc["low"][idx], min(ohlc["open"][idx], ohlc["close"][idx]))
+
+    def test_suspension_resumption_candle_uses_last_available_close(self) -> None:
+        """停牌复牌日：OHLC 比率必须与净值使用同一个前收（最近有效收盘）。"""
+        index = pd.to_datetime(["2024-01-02", "2024-01-03", "2024-01-04", "2024-01-05"])
+        # 2024-01-04 停牌（无行情），01-05 复牌 10.0 -> 12.0
+        close_df = pd.DataFrame({"A": [10.0, 10.0, np.nan, 12.0]}, index=index)
+        open_df = pd.DataFrame({"A": [10.0, 10.0, np.nan, 12.0]}, index=index)
+        high_df = pd.DataFrame({"A": [10.0, 10.0, np.nan, 12.6]}, index=index)
+        low_df = pd.DataFrame({"A": [10.0, 10.0, np.nan, 11.8]}, index=index)
+
+        ohlc = prepare_ohlc_data(open_df, high_df, low_df, close_df)
+        self.assertEqual(ohlc["open"][2, 0], 1.0, "停牌日应是一根无波动的占位蜡烛")
+        self.assertAlmostEqual(ohlc["open"][3, 0], 1.2, places=9)
+        self.assertAlmostEqual(ohlc["high"][3, 0], 1.26, places=9)
+        self.assertAlmostEqual(ohlc["low"][3, 0], 1.18, places=9)
+
+        returns_array, *_ = prepare_nav_data(close_df)
+        self.assertEqual(returns_array[2, 0], 0.0, "停牌日收益记 0")
+        self.assertAlmostEqual(returns_array[3, 0], 0.2, places=9, msg="复牌日收益应包含整个跳空")
+
+    def test_suspension_nav_ohlc_close_still_matches_nav(self) -> None:
+        index = pd.to_datetime(["2024-01-02", "2024-01-03", "2024-01-04", "2024-01-05"])
+        close_df = pd.DataFrame({"A": [10.0, 10.0, np.nan, 12.0]}, index=index)
+        open_df = pd.DataFrame({"A": [10.0, 10.0, np.nan, 12.0]}, index=index)
+        high_df = pd.DataFrame({"A": [10.0, 10.0, np.nan, 12.6]}, index=index)
+        low_df = pd.DataFrame({"A": [10.0, 10.0, np.nan, 11.8]}, index=index)
+        nav, *_ = compute_all_mode_navs(
+            *prepare_nav_data(close_df),
+            [make_plan("2024-01-01", {"A": 1.0})],
+            [],
+            comparison_rebalance_dates={},
+            ohlc_data=prepare_ohlc_data(open_df, high_df, low_df, close_df),
+        )
+        ohlc = nav.attrs.get("nav_ohlc")
+        self.assertIsNotNone(ohlc)
+        assert ohlc is not None
+        np.testing.assert_allclose(ohlc["close"], nav.values, rtol=1e-12)
+        for idx in range(len(ohlc["dates"])):
+            self.assertGreaterEqual(ohlc["high"][idx], max(ohlc["open"][idx], ohlc["close"][idx]))
+            self.assertLessEqual(ohlc["low"][idx], min(ohlc["open"][idx], ohlc["close"][idx]))
 
     def test_rebalance_with_cost_reduces_nav_and_logs_cost(self) -> None:
         dates = [pd.Timestamp("2024-01-03")]

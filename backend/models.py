@@ -83,6 +83,10 @@ class BacktestRequest(BaseModel):
     stamp_duty_rate: float = 0.0
     slippage_rate: float = 0.0
     allow_cash: bool = False
+    # When true, fetch daily open/high/low together with close and return a
+    # synthetic index OHLC series for the candlestick view. Opt-in so existing
+    # API clients keep the cheaper close-only path.
+    include_ohlc: bool = False
 
     @field_validator("end_date")
     @classmethod

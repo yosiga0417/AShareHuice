@@ -305,6 +305,11 @@ body.sidebar-collapsed .app-shell { grid-template-columns: 0 1fr; }
   z-index: 30;
 }
 
+.header-leading {
+  display: flex; align-items: center; gap: 12px;
+  flex: 1; min-width: 0;
+}
+
 .brand { display: flex; align-items: center; gap: 13px; flex: 1; min-width: 0; }
 
 .brand-mark {
@@ -395,6 +400,18 @@ body.sidebar-collapsed .app-shell { grid-template-columns: 0 1fr; }
 #themeToggle .icon { transition: transform .5s var(--ease-spring), opacity .3s var(--ease); }
 #themeToggle[data-theme="light"] .icon-sun { display: none; }
 #themeToggle[data-theme="dark"] .icon-moon { display: none; }
+
+/* 侧栏开关：位于顶栏最左，紧邻左侧配置面板，折叠时高亮提示返回入口 */
+#sidebarToggle { flex-shrink: 0; }
+#sidebarToggle .icon { transition: transform .24s var(--ease-spring); }
+body:not(.sidebar-collapsed) #sidebarToggle:hover .icon { transform: translateX(-1px); }
+body.sidebar-collapsed #sidebarToggle:hover .icon { transform: translateX(1px); }
+body.sidebar-collapsed #sidebarToggle {
+  color: var(--primary);
+  border-color: var(--primary-border);
+  background: var(--primary-soft);
+}
+body.sidebar-collapsed #sidebarToggle:hover { color: var(--primary); }
 
 /* ══ 左侧：连续配置面板 ══ */
 .sidebar {
@@ -947,6 +964,147 @@ body.is-running .results-empty { display: none !important; }
   font-weight: 600;
   box-shadow: var(--shadow-xs), var(--highlight-top);
 }
+
+/* ── K 线周期切换（日/周/月/季/年） ── */
+.candle-period .seg-btn {
+  padding: 5px 10px;
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+@media (max-width: 720px) {
+  .candle-period .seg-btn { padding: 5px 7px; }
+}
+
+/* ── K 线均线设置 ── */
+.ma-control { position: relative; display: inline-flex; }
+/* 均线按钮上的「已显示条数」角标：一眼看出当前显示了几条均线 */
+.ma-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: var(--surface-sunken);
+  color: var(--text-muted);
+  font-size: 10.5px;
+  font-weight: 700;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+.toolbar-btn.is-filtered {
+  color: var(--primary);
+  border-color: var(--primary-border);
+  background: var(--primary-soft);
+}
+.toolbar-btn.is-filtered .ma-count { background: var(--primary); color: #fff; }
+.ma-panel {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  z-index: 45;
+  width: 290px;
+  max-width: calc(100vw - 32px);
+  padding: 12px;
+  /* 浮层压在 K 线上，用最实的表面色，避免半透明导致勾选框看不清 */
+  background: var(--surface-strong);
+  border: 1px solid var(--border-strong);
+  border-radius: 12px;
+  box-shadow: var(--shadow-lg);
+  backdrop-filter: blur(var(--glass-blur));
+  -webkit-backdrop-filter: blur(var(--glass-blur));
+}
+.ma-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.ma-panel-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-dark);
+}
+.ma-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--subtle);
+  font-size: 15px;
+  line-height: 1;
+  box-shadow: none;
+  cursor: pointer;
+}
+.ma-close:hover {
+  background: var(--surface-hover);
+  color: var(--text-dark);
+  box-shadow: none;
+  transform: none;
+}
+.ma-checklist {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 230px;
+  overflow-y: auto;
+}
+.ma-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 3px 5px;
+  border-radius: 6px;
+}
+.ma-item:hover { background: var(--surface-hover); }
+.ma-item-main {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--text);
+  cursor: pointer;
+}
+.ma-item-main input[type="checkbox"] {
+  margin: 0;
+  accent-color: var(--primary);
+  cursor: pointer;
+}
+.ma-dot {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 8px;
+  border-radius: 50%;
+}
+.ma-remove {
+  border: 0;
+  background: transparent;
+  color: var(--subtle);
+  font-size: 15px;
+  line-height: 1;
+  padding: 2px 5px;
+  min-height: 0;
+  border-radius: 5px;
+  box-shadow: none;
+  cursor: pointer;
+}
+.ma-remove:hover { background: var(--danger-light); color: var(--danger); box-shadow: none; }
+.ma-custom-row { display: flex; gap: 6px; margin-top: 10px; }
+.ma-custom-row input[type="number"] { flex: 1; min-width: 0; height: 30px; padding: 0 8px; }
+.ma-custom-row button { flex: 0 0 auto; }
+.ma-panel-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.ma-panel .field-error { min-height: 14px; margin-top: 4px; font-size: 11px; }
 
 .benchmark-bar {
   display: inline-flex;
@@ -1919,6 +2077,9 @@ th.col-action { width: 40px; }
 :root[data-theme="dark"] .metric:nth-child(4) { animation-delay: .14s; }
 :root[data-theme="dark"] .metric:nth-child(5) { animation-delay: .18s; }
 :root[data-theme="dark"] .metric:nth-child(6) { animation-delay: .22s; }
+/* 工具栏里挂着「均线设置」浮层：入场动画不能保留 both 填充，
+   否则动画结束后工具栏仍留在合成层，浮层会被整块降透明度、图表透过来。 */
+:root[data-theme="dark"] .chart-toolbar { animation-fill-mode: none; }
 @keyframes rise { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
 
 /* 减少动效偏好 */
@@ -1974,6 +2135,7 @@ th.col-action { width: 40px; }
 
 @media (max-width: 560px) {
   .brand-sub { display: none; }
+  .header-leading { gap: 8px; }
   .header-status { gap: 8px; }
   #backendStatus { padding: 4px 9px; }
   #backendStatus .status-text { display: none; }

@@ -358,6 +358,33 @@
     );
   }
 
+  /* 组合指数 K 线：后端返回 {dates, open, high, low, close}。
+     旧版本保存的结果没有该字段，返回 null 让 K 线视图给出重新回测提示。 */
+  function normalizeNavOhlc(raw) {
+    if (!raw || !Array.isArray(raw.dates) || !raw.dates.length) return null;
+    const dates = raw.dates.slice();
+    const limit = dates.length;
+    const read = key => {
+      if (!Array.isArray(raw[key]) || !raw[key].length) return [];
+      return raw[key].slice(0, limit).map(value => value == null ? null : Number(value));
+    };
+    const open = read("open");
+    const high = read("high");
+    const low = read("low");
+    const close = read("close");
+    const size = Math.min(dates.length, open.length, high.length, low.length, close.length);
+    if (size <= 0) return null;
+    return {
+      dates: dates.slice(0, size),
+      open: open.slice(0, size),
+      high: high.slice(0, size),
+      low: low.slice(0, size),
+      close: close.slice(0, size),
+      // 回测请求的结束日（旧结果没有该字段，前端退回按最后交易日推断）。
+      end_date: typeof raw.end_date === "string" && raw.end_date ? raw.end_date : null
+    };
+  }
+
   function normalizeHoldingSeries(item = {}) {
     if (Array.isArray(item.data)) {
       const filtered = item.data.filter(point => point?.date);
@@ -382,6 +409,7 @@
     return {
       ...result,
       nav: normalizeValueSeries(result.nav),
+      nav_ohlc: normalizeNavOhlc(result.nav_ohlc),
       benchmark_nav: normalizeBenchmarkNavs(result.benchmark_nav || {}),
       holdings_evolution: (result.holdings_evolution || []).map(normalizeHoldingSeries)
     };
@@ -2372,6 +2400,8 @@ function renderBacktestNotes(result = null) {
       stamp_duty_rate: Number(document.getElementById("stampDutyRate").value || 0) / 100,
       slippage_rate: Number(document.getElementById("slippageRate").value || 0) / 100,
       allow_cash: document.getElementById("allowCash").checked,
+      /* K 线视图需要开高低收；与收盘价共用同一次 AKShare 日线请求。 */
+      include_ohlc: true,
       plans
     };
   }
@@ -2568,15 +2598,34 @@ function renderBacktestNotes(result = null) {
         const nav = result.nav;
         const navLen = nav.dates.length;
         let thinnedNav = nav;
+        let thinnedOhlc = result.nav_ohlc;
         if (navLen > 1000) {
           const stride = Math.ceil(navLen / 1000);
+          // 抽稀必须保留第一个和最后一个点：否则刷新后净值曲线与报告截止日
+          // 会比指标/回测区间少一天（例如 1500 点、stride=2 时丢掉第 1499 天）。
+          const keepIndexes = new Set();
+          for (let i = 0; i < navLen; i += stride) keepIndexes.add(i);
+          keepIndexes.add(navLen - 1);
+          const keep = (_, i) => keepIndexes.has(i);
           thinnedNav = {
-            dates: nav.dates.filter((_, i) => i % stride === 0),
-            values: nav.values.filter((_, i) => i % stride === 0)
+            dates: nav.dates.filter(keep),
+            values: nav.values.filter(keep)
           };
+          // nav_ohlc 必须跟随 nav 一起抽稀：否则恢复保存结果后，日 K 只有
+          // 1/stride 的交易日，周/月 K 的开高低也只基于被抽中的那几天。
+          if (thinnedOhlc && thinnedOhlc.dates.length === navLen) {
+            thinnedOhlc = {
+              ...thinnedOhlc,
+              dates: thinnedOhlc.dates.filter(keep),
+              open: thinnedOhlc.open.filter(keep),
+              high: thinnedOhlc.high.filter(keep),
+              low: thinnedOhlc.low.filter(keep),
+              close: thinnedOhlc.close.filter(keep)
+            };
+          }
         }
         const payload = {
-          result: { ...result, nav: thinnedNav },
+          result: { ...result, nav: thinnedNav, nav_ohlc: thinnedOhlc },
           savedAt: new Date().toISOString(),
           params: {
             startDate: document.getElementById("startDate").value,

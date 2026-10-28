@@ -62,6 +62,13 @@ class FrontendStaticRoutesTest(unittest.TestCase):
         for leaked in ("/backend/api.py", "/requirements.txt", "/.cache", "/start.sh"):
             self.assertNotIn(leaked, self.paths)
 
+    def test_backtest_payload_requests_ohlc(self) -> None:
+        # K 线视图依赖前端在每次回测请求里开启 include_ohlc；一旦被删掉，
+        # 图表会退化成「请重新执行一次回测」的提示，且没有任何测试会失败。
+        source = (FRONTEND_DIR / "app.js").read_text(encoding="utf-8")
+        self.assertRegex(source, r"include_ohlc:\s*true")
+        self.assertIn("nav_ohlc", source)
+
 
 if __name__ == "__main__":
     unittest.main()

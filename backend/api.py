@@ -31,11 +31,13 @@ from backend.engine import (
     normalize_weight_map,
     parse_weight,
     prepare_nav_data,
+    prepare_ohlc_data,
 )
 from backend.fetch import (
     build_benchmark_fetch_codes,
     fetch_benchmark_navs,
     fetch_close_prices,
+    fetch_ohlc_matrices,
 )
 from backend.models import (
     BacktestRequest,
@@ -100,6 +102,7 @@ BACKTEST_STAGE_LABELS = {
     "queued": "等待执行",
     "prepare": "准备参数",
     "fetch_prices": "拉取成分股行情",
+    "fetch_ohlc": "拉取开高低收（K线）",
     "align_plans": "整理交易与调仓",
     "compute": "计算净值与指标",
     "fetch_benchmarks": "拉取基准行情",
@@ -528,7 +531,7 @@ def execute_backtest(
     warnings.extend(data_warnings)
     ensure_not_cancelled()
 
-    report(0.74, "align_plans", "正在剔除无有效行情的成分股…")
+    report(0.70, "align_plans", "正在剔除无有效行情的成分股…")
     filtered_plans, plan_warnings = drop_unavailable_symbols(
         plans, close_df, allow_cash=request.allow_cash
     )
@@ -538,7 +541,37 @@ def execute_backtest(
     if len(trading_dates) < 2:
         raise HTTPException(status_code=400, detail="交易日数量不足，无法完成回测")
 
-    report(0.80, "align_plans", "正在对齐交易日与调仓计划…")
+    ohlc_data = None
+    if request.include_ohlc:
+        # Only fetch candles for symbols that survived the availability filter;
+        # otherwise symbols without any close quote would be requested needlessly.
+        ohlc_symbols = sorted({code for plan in filtered_plans for code in plan.weight_map})
+
+        def on_ohlc_progress(done: int, total: int, message: str) -> None:
+            fraction = 1.0 if total <= 0 else done / total
+            report(0.70 + 0.06 * fraction, "fetch_ohlc", message, done, total)
+
+        try:
+            report(0.70, "fetch_ohlc", "正在拉取开盘/最高/最低价，用于生成 K 线…")
+            open_df, high_df, low_df, ohlc_warnings = fetch_ohlc_matrices(
+                ohlc_symbols,
+                request.start_date,
+                request.end_date,
+                close_df,
+                progress_callback=on_ohlc_progress,
+            )
+            warnings.extend(ohlc_warnings)
+            ensure_not_cancelled()
+            ohlc_data = prepare_ohlc_data(open_df, high_df, low_df, close_df)
+        except BacktestCancelled:
+            raise
+        except Exception as exc:
+            # Candles are a presentation feature: a failure here must not turn a
+            # valid backtest into a 500. Degrade to "no candles" plus a warning.
+            ohlc_data = None
+            warnings.append(f"K 线开高低收获取失败，本次结果不含 K 线数据：{exc}")
+
+    report(0.82, "align_plans", "正在对齐交易日与调仓计划…")
     aligned_plans = align_plan_dates_to_trading_days(
         filtered_plans, trading_dates, pd.Timestamp(request.start_date), warnings,
     )
@@ -583,6 +616,7 @@ def execute_backtest(
         slippage_rate=request.slippage_rate,
         daily_rf_rate=daily_rf_rate,
         track_top_n=15,
+        ohlc_data=ohlc_data,
     )
     # Enrich holdings evolution with names
     if holdings_evolution:
@@ -607,6 +641,12 @@ def execute_backtest(
         "dates": [str(pd.Timestamp(idx).date()) for idx in nav_series.index],
         "values": [float(round(v, 8)) for v in nav_series.values],
     }
+    nav_ohlc = nav_series.attrs.get("nav_ohlc")
+    if nav_ohlc is not None:
+        # The frontend uses the requested end date (not the last trading day) to
+        # decide whether the final week/month/quarter/year candle is complete,
+        # so weekends and holidays at period boundaries are not mislabelled.
+        nav_ohlc = {**nav_ohlc, "end_date": str(request.end_date)}
 
     benchmark_fetch_codes = build_benchmark_fetch_codes(request.benchmarks)
 
@@ -626,13 +666,15 @@ def execute_backtest(
     report(0.99, "finalize", "正在整理回测结果…")
 
     result = {
-        "data_source": "AKShare.stock_zh_a_hist(主) + stock_zh_a_hist_tx(兜底), 前复权",
+        "data_source": "AKShare.stock_zh_a_hist(主) + stock_zh_a_hist_tx(兜底), 前复权日线"
+        + ("（收盘价 + 开高低收）" if request.include_ohlc else "（收盘价）"),
         "missing_data_policy": "hold_cash: 成分股当日无行情(停牌/缺失)时记作当日收益 0，资金等效留在该头寸",
         "metrics": metrics,
         "selected_rebalance_mode": request.rebalance_mode,
         "selected_rebalance_label": REBALANCE_MODE_LABELS[request.rebalance_mode],
         "comparison_metrics": comparison_metrics,
         "nav": nav_points,
+        "nav_ohlc": nav_ohlc,
         "benchmark_nav": benchmark_nav,
         "rebalance_dates": [str(dt.date()) for dt in primary_rebalance_dates],
         "applied_rebalance_dates": applied_rebalance_dates,

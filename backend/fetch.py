@@ -9,10 +9,12 @@ from typing import Dict, Iterable, List, Optional, Set, Tuple
 from zoneinfo import ZoneInfo
 
 import akshare as ak
+import numpy as np
 import pandas as pd
 from fastapi import HTTPException
 
 from backend.cache import (
+    clear_today_ohlc_cache,
     clear_today_quote_cache,
     compute_missing_ranges,
     expand_fetch_range,
@@ -20,16 +22,25 @@ from backend.cache import (
     load_cached_benchmark_series,
     load_cached_benchmark_ranges,
     load_cached_stock_fallback,
+    load_cached_stock_ohlc,
+    load_cached_stock_ohlc_ranges,
     load_cached_stock_ranges,
     load_cached_stock_series,
+    load_today_ohlc_cache,
     load_today_quote_cache,
+    merge_ohlc_frames,
     merge_price_series,
     normalize_cached_ranges,
+    normalize_ohlc_frame,
     save_cached_benchmark_series,
     save_cached_benchmark_ranges,
+    save_cached_stock_ohlc,
+    save_cached_stock_ohlc_ranges,
     save_cached_stock_ranges,
     save_cached_stock_series,
+    save_today_ohlc_cache,
     save_today_quote_cache,
+    slice_ohlc_frame,
     slice_price_series,
 )
 from backend.config import read_positive_int_env
@@ -213,6 +224,40 @@ def extract_date_close_series(hist_df: pd.DataFrame) -> pd.Series:
     return out
 
 
+def extract_date_ohlc_frame(hist_df: pd.DataFrame) -> pd.DataFrame:
+    """Extract date/open/high/low/close from an AKShare daily history frame.
+
+    ``stock_zh_a_hist`` uses Chinese column names (日期/开盘/收盘/最高/最低)
+    while the Tencent fallback uses English ones (date/open/close/high/low).
+    Missing open/high/low columns degrade to close-only candles instead of
+    failing the whole backtest.
+    """
+    date_col = next((c for c in ("日期", "date") if c in hist_df.columns), None)
+    close_col = next((c for c in ("收盘", "close") if c in hist_df.columns), None)
+    if date_col is None or close_col is None:
+        raise ValueError("行情字段不完整，无法识别日期和收盘价列")
+    open_col = next((c for c in ("开盘", "open") if c in hist_df.columns), None)
+    high_col = next((c for c in ("最高", "最高价", "high") if c in hist_df.columns), None)
+    low_col = next((c for c in ("最低", "最低价", "low") if c in hist_df.columns), None)
+
+    frame = pd.DataFrame(
+        {
+            "date": pd.to_datetime(hist_df[date_col], errors="coerce"),
+            "open": pd.to_numeric(hist_df[open_col], errors="coerce") if open_col else pd.NA,
+            "high": pd.to_numeric(hist_df[high_col], errors="coerce") if high_col else pd.NA,
+            "low": pd.to_numeric(hist_df[low_col], errors="coerce") if low_col else pd.NA,
+            "close": pd.to_numeric(hist_df[close_col], errors="coerce"),
+        }
+    )
+    frame = frame.dropna(subset=["date", "close"])
+    if frame.empty:
+        raise ValueError("区间内没有有效收盘价")
+    normalized = normalize_ohlc_frame(frame)
+    if normalized.empty:
+        raise ValueError("区间内没有有效的开高低收数据")
+    return normalized
+
+
 def try_fetch_hist(symbol: str, beg: str, end: str, max_retry: int = 2) -> pd.DataFrame:
     last_error: Optional[Exception] = None
     for attempt in range(max_retry):
@@ -257,21 +302,50 @@ def try_fetch_hist_tx(symbol: str, beg: str, end: str, max_retry: int = 2) -> pd
 
 def fetch_symbol_close_series_remote(
     symbol: str, start_date: date, end_date: date
-) -> Tuple[pd.Series, str]:
+) -> Tuple[pd.Series, pd.DataFrame, str]:
+    """Fetch one symbol's daily history once and return both close and OHLC.
+
+    The primary AKShare endpoint already returns 开盘/最高/最低/收盘, so the
+    candlestick data comes for free with the close-price request.
+    """
     beg = start_date.strftime("%Y%m%d")
     end = end_date.strftime("%Y%m%d")
     errors: List[str] = []
     try:
         hist = try_fetch_hist(symbol, beg, end, max_retry=2)
-        return extract_date_close_series(hist), "stock_zh_a_hist"
+        ohlc = extract_date_ohlc_frame(hist)
+        return ohlc["close"].rename("close"), ohlc, "stock_zh_a_hist"
     except Exception as exc:
         errors.append(str(exc))
     try:
         hist_tx = try_fetch_hist_tx(symbol, beg, end, max_retry=2)
-        return extract_date_close_series(hist_tx), "stock_zh_a_hist_tx"
+        ohlc = extract_date_ohlc_frame(hist_tx)
+        return ohlc["close"].rename("close"), ohlc, "stock_zh_a_hist_tx"
     except Exception as exc:
         errors.append(str(exc))
     raise RuntimeError("; ".join(errors))
+
+
+def _store_cached_stock_ohlc_locked(
+    symbol: str,
+    frame: pd.DataFrame,
+    range_start: date,
+    range_end: date,
+) -> None:
+    """Persist an OHLC slice while the caller already owns the symbol lock."""
+    if frame is None or frame.empty:
+        return
+    cached_frame = load_cached_stock_ohlc(symbol)
+    cached_ranges = load_cached_stock_ohlc_ranges(symbol)
+    if cached_ranges and cached_frame.empty:
+        # Metadata claims cached data but the Feather file is unreadable; do not
+        # let the stale range mark the gap as already fetched.
+        cached_ranges = []
+    merged = merge_ohlc_frames(cached_frame, frame)
+    save_cached_stock_ohlc(symbol, merged)
+    save_cached_stock_ohlc_ranges(
+        symbol, normalize_cached_ranges(cached_ranges + [(range_start, range_end)])
+    )
 
 
 def fetch_symbol_close_series(
@@ -297,9 +371,20 @@ def fetch_symbol_close_series(
             missing_ranges = compute_missing_ranges(request_start, historical_end, cached_ranges)
             for gap_start, gap_end in missing_ranges:
                 fetch_start, fetch_end = expand_fetch_range(gap_start, gap_end, cached_ranges)
-                gap_series, source = fetch_symbol_close_series_remote(symbol, fetch_start, fetch_end)
+                gap_series, gap_ohlc, source = fetch_symbol_close_series_remote(
+                    symbol, fetch_start, fetch_end
+                )
                 cached_series = merge_price_series(cached_series, gap_series, skip_normalize=True)
                 cached_ranges = normalize_cached_ranges(cached_ranges + [(gap_start, gap_end)])
+                # The same AKShare response already contains open/high/low, so
+                # populate the candlestick cache here instead of requesting the
+                # symbol a second time. Candles are auxiliary: a cache write
+                # failure must never invalidate an otherwise valid close fetch
+                # (e.g. read-only disk or a full disk).
+                try:
+                    _store_cached_stock_ohlc_locked(symbol, gap_ohlc, gap_start, gap_end)
+                except Exception:
+                    pass
                 fetched_sources.append(source)
                 if source == "stock_zh_a_hist_tx":
                     has_new_fallback = True
@@ -310,12 +395,22 @@ def fetch_symbol_close_series(
         should_fetch_today = includes_today and not date_is_cached(today, cached_ranges)
         if should_fetch_today:
             persist_today = should_persist_today_quote(now)
-            cached_today = None if persist_today else load_today_quote_cache("stock", symbol, today)
+            cached_today = None
+            cached_today_ohlc = None
+            if not persist_today:
+                cached_today = load_today_quote_cache("stock", symbol, today)
+                cached_today_ohlc = load_today_ohlc_cache("stock", symbol, today)
             try:
-                if cached_today is None:
-                    today_series, source = fetch_symbol_close_series_remote(symbol, today, today)
+                if cached_today is not None:
+                    today_series, source = cached_today
+                    today_ohlc = cached_today_ohlc[0] if cached_today_ohlc is not None else None
+                else:
+                    today_series, today_ohlc, source = fetch_symbol_close_series_remote(
+                        symbol, today, today
+                    )
                     if persist_today:
                         clear_today_quote_cache("stock", symbol, today)
+                        clear_today_ohlc_cache("stock", symbol, today)
                     else:
                         save_today_quote_cache(
                             "stock",
@@ -325,15 +420,27 @@ def fetch_symbol_close_series(
                             ttl_seconds=today_quote_ttl_seconds(now),
                             source=source,
                         )
-                else:
-                    today_series, source = cached_today
+                        save_today_ohlc_cache(
+                            "stock",
+                            symbol,
+                            today,
+                            today_ohlc,
+                            ttl_seconds=today_quote_ttl_seconds(now),
+                            source=source,
+                        )
                 if source:
                     fetched_sources.append(source)
                 if source == "stock_zh_a_hist_tx":
                     has_new_fallback = True
+                if today_ohlc is None:
+                    today_ohlc = normalize_ohlc_frame(pd.DataFrame({"close": today_series}))
                 if persist_today:
                     cached_series = merge_price_series(cached_series, today_series, skip_normalize=True)
                     cached_ranges = normalize_cached_ranges(cached_ranges + [(today, today)])
+                    try:
+                        _store_cached_stock_ohlc_locked(symbol, today_ohlc, today, today)
+                    except Exception:
+                        pass
                     result_series = cached_series
                     cache_dirty = True
                     ranges_dirty = True
@@ -427,6 +534,210 @@ def fetch_close_prices(
     if close_df.empty:
         raise HTTPException(status_code=400, detail="行情数据为空，无法回测")
     return close_df, warnings
+
+
+def fetch_symbol_ohlc_remote(
+    symbol: str, start_date: date, end_date: date
+) -> Tuple[pd.DataFrame, str]:
+    """Return daily OHLC for one symbol (primary source, Tencent fallback)."""
+    _series, frame, source = fetch_symbol_close_series_remote(symbol, start_date, end_date)
+    return frame, source
+
+
+def fetch_symbol_ohlc_frame(
+    symbol: str, start_date: date, end_date: date
+) -> Tuple[pd.DataFrame, str]:
+    """Load one symbol's OHLC frame from cache, fetching only missing ranges."""
+    request_start = pd.Timestamp(start_date).date()
+    request_end = pd.Timestamp(end_date).date()
+    if request_start > request_end:
+        raise ValueError("开始日期不能晚于结束日期")
+    now = get_china_now()
+    today = now.date()
+    includes_today = request_start <= today <= request_end and should_refresh_today_quote(now)
+    historical_end = min(request_end, today - timedelta(days=1)) if request_end >= today else request_end
+    with get_cache_resource_lock("stock", symbol):
+        cached_frame = load_cached_stock_ohlc(symbol)
+        cached_ranges = load_cached_stock_ohlc_ranges(symbol)
+        if cached_ranges and cached_frame.empty:
+            # The metadata claims a range is cached but the Feather file is
+            # missing/unreadable; refetch instead of silently returning no candles.
+            cached_ranges = []
+        fetched_sources: List[str] = []
+        cache_dirty = False
+        ranges_dirty = False
+        if request_start <= historical_end:
+            missing_ranges = compute_missing_ranges(request_start, historical_end, cached_ranges)
+            for gap_start, gap_end in missing_ranges:
+                fetch_start, fetch_end = expand_fetch_range(gap_start, gap_end, cached_ranges)
+                gap_frame, source = fetch_symbol_ohlc_remote(symbol, fetch_start, fetch_end)
+                cached_frame = merge_ohlc_frames(cached_frame, gap_frame)
+                cached_ranges = normalize_cached_ranges(cached_ranges + [(gap_start, gap_end)])
+                fetched_sources.append(source)
+                cache_dirty = True
+                ranges_dirty = True
+        result_frame = cached_frame
+        should_fetch_today = includes_today and not date_is_cached(today, cached_ranges)
+        if should_fetch_today:
+            try:
+                persist_today = should_persist_today_quote(now)
+                cached_today = None if persist_today else load_today_ohlc_cache("stock", symbol, today)
+                if cached_today is None:
+                    today_frame, source = fetch_symbol_ohlc_remote(symbol, today, today)
+                    if persist_today:
+                        clear_today_ohlc_cache("stock", symbol, today)
+                    else:
+                        save_today_ohlc_cache(
+                            "stock",
+                            symbol,
+                            today,
+                            today_frame,
+                            ttl_seconds=today_quote_ttl_seconds(now),
+                            source=source,
+                        )
+                else:
+                    today_frame, source = cached_today
+                if source:
+                    fetched_sources.append(source)
+                if persist_today:
+                    cached_frame = merge_ohlc_frames(cached_frame, today_frame)
+                    cached_ranges = normalize_cached_ranges(cached_ranges + [(today, today)])
+                    result_frame = cached_frame
+                    cache_dirty = True
+                    ranges_dirty = True
+                else:
+                    result_frame = merge_ohlc_frames(cached_frame, today_frame)
+            except Exception:
+                # Right after the close (or on a transient network error) the
+                # daily bar for today may not be available yet. Mirror
+                # fetch_symbol_close_series: keep the historical candles and
+                # let the caller degrade gracefully instead of discarding a
+                # symbol whose history was loaded successfully.
+                result_frame = cached_frame
+        if cache_dirty:
+            save_cached_stock_ohlc(symbol, cached_frame)
+        if ranges_dirty:
+            save_cached_stock_ohlc_ranges(symbol, cached_ranges)
+        result = slice_ohlc_frame(result_frame, request_start, request_end)
+        if result.empty:
+            raise RuntimeError("区间内没有可用的开高低收数据")
+        if "stock_zh_a_hist_tx" in fetched_sources:
+            return result, "stock_zh_a_hist_tx"
+        if "stock_zh_a_hist" in fetched_sources:
+            return result, "stock_zh_a_hist"
+        return result, "cache"
+
+
+def derive_ohlc_from_close(close_series: pd.Series) -> pd.DataFrame:
+    """Fallback candles when a symbol has no open/high/low data.
+
+    Uses the previous available close as the open and the close for both the
+    high and low, so a resumption after a suspension still opens at the last
+    traded price instead of collapsing to a flat doji. The engine then produces
+    a valid (if coarse) candle for that symbol.
+    """
+    close = pd.to_numeric(close_series, errors="coerce")
+    previous = close.ffill().shift(1)
+    open_ = previous.where(previous.notna(), close)
+    high = pd.concat([open_, close], axis=1).max(axis=1)
+    low = pd.concat([open_, close], axis=1).min(axis=1)
+    return normalize_ohlc_frame(
+        pd.DataFrame({"open": open_, "high": high, "low": low, "close": close})
+    )
+
+
+def fetch_ohlc_matrices(
+    symbols: List[str],
+    start_date: date,
+    end_date: date,
+    close_df: pd.DataFrame,
+    progress_callback: Optional[StageProgressCallback] = None,
+) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, List[str]]:
+    """Fetch per-symbol OHLC and align it to the backtest's close matrix.
+
+    Returns ``(open_df, high_df, low_df, warnings)``. Symbols whose OHLC cannot
+    be fetched fall back to candles derived from their close series, so the
+    candlestick view always renders something sensible.
+    """
+    warnings: List[str] = []
+    usable_columns = [code for code in close_df.columns if code in set(symbols)]
+    if not usable_columns:
+        empty = pd.DataFrame(index=close_df.index)
+        return empty, empty, empty, warnings
+
+    total_symbols = len(usable_columns)
+    worker_count = resolve_fetch_worker_count(total_symbols)
+    if progress_callback is not None:
+        progress_callback(
+            0, total_symbols,
+            f"开始拉取 {total_symbols} 只成分股的开盘/最高/最低价（并发 {worker_count}）…",
+        )
+    results: Dict[str, pd.DataFrame] = {}
+    errors: Dict[str, str] = {}
+    completed = 0
+    executor = ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="stock-ohlc-fetch")
+    future_to_symbol = {
+        executor.submit(fetch_symbol_ohlc_frame, symbol, start_date, end_date): symbol
+        for symbol in usable_columns
+    }
+    try:
+        for future in as_completed(future_to_symbol):
+            symbol = future_to_symbol[future]
+            try:
+                frame, _source = future.result()
+                results[symbol] = frame
+            except Exception as exc:
+                errors[symbol] = str(exc)
+            completed += 1
+            if progress_callback is not None:
+                progress_callback(
+                    completed, total_symbols,
+                    f"已处理成分股 {symbol} 开高低收（{completed}/{total_symbols}）",
+                )
+    except BaseException:
+        for future in future_to_symbol:
+            future.cancel()
+        executor.shutdown(wait=True)
+        raise
+    else:
+        executor.shutdown(wait=True)
+
+    aligned: Dict[str, pd.DataFrame] = {}
+    for symbol in usable_columns:
+        close_series = pd.to_numeric(close_df[symbol], errors="coerce")
+        frame = results.get(symbol)
+        if frame is None or frame.empty:
+            frame = derive_ohlc_from_close(close_series)
+        else:
+            frame = frame.reindex(close_df.index)
+            # Front-adjusted (qfq) prices from different fetch dates can use a
+            # different adjustment baseline. Rescale each day's OHLC by
+            # official_close / ohlc_close so the candle's close is exactly the
+            # close used by the NAV calculation, while the intraday open/high/
+            # low shape (relative to that day's close) is preserved.
+            effective_close = frame["close"].fillna(close_series)
+            with np.errstate(divide="ignore", invalid="ignore"):
+                factor = close_series / effective_close.replace(0.0, np.nan)
+            factor = factor.where(np.isfinite(factor) & (factor > 0))
+            for key in ("open", "high", "low"):
+                frame[key] = pd.to_numeric(frame[key], errors="coerce") * factor
+            frame["close"] = close_series
+            frame = normalize_ohlc_frame(frame)
+            frame = frame.reindex(close_df.index)
+        aligned[symbol] = frame
+
+    if errors:
+        warnings.append(
+            f"{len(errors)} 只成分股开高低收获取失败，K线已改用收盘价近似（{'、'.join(sorted(errors)[:5])}"
+            + ("…" if len(errors) > 5 else "") + "）"
+        )
+
+    def column(key: str) -> pd.DataFrame:
+        return pd.concat(
+            {symbol: aligned[symbol][key] for symbol in usable_columns}, axis=1
+        ).reindex(index=close_df.index, columns=close_df.columns)
+
+    return column("open"), column("high"), column("low"), warnings
 
 
 def fetch_benchmark_close_series_remote(

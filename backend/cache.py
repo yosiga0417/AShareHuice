@@ -3,7 +3,9 @@ from __future__ import annotations
 from datetime import date, timedelta
 from functools import lru_cache
 import json
+import os
 from pathlib import Path
+import tempfile
 import threading
 import time
 from typing import Dict, Iterable, List, Optional, Tuple
@@ -16,13 +18,19 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 CACHE_ROOT = BASE_DIR / ".cache" / "akshare"
 STOCK_CACHE_DIR = CACHE_ROOT / "stock_close"
 STOCK_META_DIR = CACHE_ROOT / "stock_close_meta"
+STOCK_OHLC_CACHE_DIR = CACHE_ROOT / "stock_ohlc"
+STOCK_OHLC_META_DIR = CACHE_ROOT / "stock_ohlc_meta"
 BENCHMARK_CACHE_DIR = CACHE_ROOT / "benchmark_close"
 BENCHMARK_META_DIR = CACHE_ROOT / "benchmark_close_meta"
+
+OHLC_COLUMNS = ("open", "high", "low", "close")
 
 CACHE_RESOURCE_LOCKS: Dict[str, threading.Lock] = {}
 CACHE_RESOURCE_LOCKS_GUARD = threading.Lock()
 TODAY_QUOTE_CACHE: Dict[str, Tuple[pd.Series, Optional[str], float]] = {}
 TODAY_QUOTE_CACHE_GUARD = threading.Lock()
+TODAY_OHLC_CACHE: Dict[str, Tuple[pd.DataFrame, Optional[str], float]] = {}
+TODAY_OHLC_CACHE_GUARD = threading.Lock()
 
 
 def get_cache_resource_lock(namespace: str, key: str) -> threading.Lock:
@@ -91,14 +99,119 @@ def clear_today_quote_cache(namespace: str, key: str, quote_date: date) -> None:
         TODAY_QUOTE_CACHE.pop(cache_key, None)
 
 
+def load_today_ohlc_cache(
+    namespace: str,
+    key: str,
+    quote_date: date,
+) -> Optional[Tuple[pd.DataFrame, Optional[str]]]:
+    cache_key = _today_quote_cache_key(namespace, key, quote_date)
+    now = time.monotonic()
+    with TODAY_OHLC_CACHE_GUARD:
+        entry = TODAY_OHLC_CACHE.get(cache_key)
+        if entry is None:
+            return None
+        frame, source, expires_at = entry
+        if expires_at <= now:
+            TODAY_OHLC_CACHE.pop(cache_key, None)
+            return None
+        return frame.copy(), source
+
+
+def save_today_ohlc_cache(
+    namespace: str,
+    key: str,
+    quote_date: date,
+    frame: pd.DataFrame,
+    *,
+    ttl_seconds: int,
+    source: Optional[str] = None,
+) -> None:
+    if ttl_seconds <= 0:
+        return
+    clean_frame = normalize_ohlc_frame(frame)
+    if clean_frame.empty:
+        return
+    cache_key = _today_quote_cache_key(namespace, key, quote_date)
+    now = time.monotonic()
+    expires_at = now + ttl_seconds
+    with TODAY_OHLC_CACHE_GUARD:
+        expired_keys = [
+            existing_key
+            for existing_key, (_frame, _source, existing_expires_at) in TODAY_OHLC_CACHE.items()
+            if existing_expires_at <= now
+        ]
+        for expired_key in expired_keys:
+            TODAY_OHLC_CACHE.pop(expired_key, None)
+        TODAY_OHLC_CACHE[cache_key] = (clean_frame, source, expires_at)
+
+
+def clear_today_ohlc_cache(namespace: str, key: str, quote_date: date) -> None:
+    cache_key = _today_quote_cache_key(namespace, key, quote_date)
+    with TODAY_OHLC_CACHE_GUARD:
+        TODAY_OHLC_CACHE.pop(cache_key, None)
+
+
 def ensure_stock_cache_dirs() -> None:
     STOCK_CACHE_DIR.mkdir(parents=True, exist_ok=True)
     STOCK_META_DIR.mkdir(parents=True, exist_ok=True)
+    STOCK_OHLC_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    STOCK_OHLC_META_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def ensure_benchmark_cache_dirs() -> None:
     BENCHMARK_CACHE_DIR.mkdir(parents=True, exist_ok=True)
     BENCHMARK_META_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _atomic_write_bytes(path: Path, payload: bytes) -> None:
+    """Write ``payload`` to ``path`` via a temp file + os.replace.
+
+    A crash or power loss mid-write must never leave a truncated Feather/meta
+    file behind: readers would then see the new file signature while the
+    content is unreadable, silently degrading the cached data.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent)
+    )
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_name, path)
+    except BaseException:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    _atomic_write_bytes(path, text.encode("utf-8"))
+
+
+def _atomic_write_feather(path: Path, frame: pd.DataFrame) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent)
+    )
+    os.close(fd)
+    try:
+        frame.to_feather(tmp_name)
+        # Flush the payload before the rename: an unflushed rename can survive
+        # a power loss while the data blocks do not, leaving an empty/corrupt
+        # Feather file behind.
+        with open(tmp_name, "r+b") as handle:
+            os.fsync(handle.fileno())
+        os.replace(tmp_name, path)
+    except BaseException:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
 
 
 def stock_cache_file(symbol: str) -> Path:
@@ -107,6 +220,14 @@ def stock_cache_file(symbol: str) -> Path:
 
 def stock_cache_meta_file(symbol: str) -> Path:
     return STOCK_META_DIR / f"{symbol}.json"
+
+
+def stock_ohlc_cache_file(symbol: str) -> Path:
+    return STOCK_OHLC_CACHE_DIR / f"{symbol}.feather"
+
+
+def stock_ohlc_cache_meta_file(symbol: str) -> Path:
+    return STOCK_OHLC_META_DIR / f"{symbol}.json"
 
 
 def benchmark_cache_file(code: str) -> Path:
@@ -181,11 +302,102 @@ def _load_cached_series(cache_path_str: str, signature: FileSignature) -> pd.Ser
 
 
 def save_cached_series(cache_path: Path, series: pd.Series) -> None:
-    cache_path.parent.mkdir(parents=True, exist_ok=True)
     clean_series = normalize_price_series(series)
     df = clean_series.rename("close").reset_index()
     df.columns = ["date", "close"]
-    df.to_feather(cache_path)
+    _atomic_write_feather(cache_path, df)
+
+
+def normalize_ohlc_frame(frame: pd.DataFrame) -> pd.DataFrame:
+    """Return a date-indexed frame with float open/high/low/close columns.
+
+    Missing open/high/low values are filled from close so a partially cached
+    symbol can still produce a valid candle; rows without a close are dropped.
+    """
+    empty = pd.DataFrame(columns=list(OHLC_COLUMNS), dtype="float64")
+    if frame is None or len(frame) == 0:
+        return empty
+    df = frame.copy()
+    if "date" in df.columns:
+        df = df.set_index("date")
+    df.index = pd.to_datetime(df.index, errors="coerce").normalize()
+    close = pd.to_numeric(df["close"], errors="coerce") if "close" in df.columns else pd.Series(
+        [float("nan")] * len(df), index=df.index, dtype="float64"
+    )
+    open_ = pd.to_numeric(df["open"], errors="coerce") if "open" in df.columns else close
+    high = pd.to_numeric(df["high"], errors="coerce") if "high" in df.columns else pd.Series(
+        [float("nan")] * len(df), index=df.index, dtype="float64"
+    )
+    low = pd.to_numeric(df["low"], errors="coerce") if "low" in df.columns else pd.Series(
+        [float("nan")] * len(df), index=df.index, dtype="float64"
+    )
+    out = pd.DataFrame({"open": open_, "high": high, "low": low, "close": close})
+    out = out[out["close"].notna()]
+    if out.empty:
+        return empty
+    out["open"] = out["open"].fillna(out["close"])
+    out["high"] = out["high"].fillna(out[["open", "close"]].max(axis=1))
+    out["low"] = out["low"].fillna(out[["open", "close"]].min(axis=1))
+    # Guard against rounding in adjusted prices: a candle must always contain
+    # its own open/close.
+    out["high"] = out[["high", "open", "close"]].max(axis=1)
+    out["low"] = out[["low", "open", "close"]].min(axis=1)
+    out = out[~out.index.isna()]
+    out = out[~out.index.duplicated(keep="last")].sort_index()
+    return out.astype(float)
+
+
+@lru_cache(maxsize=1024)
+def _load_cached_ohlc_frame(cache_path_str: str, signature: FileSignature) -> pd.DataFrame:
+    if signature is None:
+        return pd.DataFrame(columns=list(OHLC_COLUMNS), dtype="float64")
+    try:
+        df = pd.read_feather(cache_path_str)
+    except Exception:
+        return pd.DataFrame(columns=list(OHLC_COLUMNS), dtype="float64")
+    return normalize_ohlc_frame(df)
+
+
+def load_cached_ohlc_frame(cache_path: Path) -> pd.DataFrame:
+    return _load_cached_ohlc_frame(str(cache_path), file_signature(cache_path)).copy()
+
+
+def save_cached_ohlc_frame(cache_path: Path, frame: pd.DataFrame) -> None:
+    clean_frame = normalize_ohlc_frame(frame)
+    if clean_frame.empty:
+        return
+    df = clean_frame.rename_axis("date").reset_index()
+    df = df[["date", *OHLC_COLUMNS]]
+    _atomic_write_feather(cache_path, df)
+
+
+def load_cached_stock_ohlc(symbol: str) -> pd.DataFrame:
+    return load_cached_ohlc_frame(stock_ohlc_cache_file(symbol))
+
+
+def save_cached_stock_ohlc(symbol: str, frame: pd.DataFrame) -> None:
+    ensure_stock_cache_dirs()
+    save_cached_ohlc_frame(stock_ohlc_cache_file(symbol), frame)
+
+
+def merge_ohlc_frames(base: pd.DataFrame, incoming: pd.DataFrame) -> pd.DataFrame:
+    if base is None or len(base) == 0:
+        return normalize_ohlc_frame(incoming)
+    if incoming is None or len(incoming) == 0:
+        return normalize_ohlc_frame(base)
+    result = pd.concat([base, incoming])
+    result = result[~result.index.duplicated(keep="last")].sort_index()
+    return normalize_ohlc_frame(result)
+
+
+def slice_ohlc_frame(frame: pd.DataFrame, start_date: date, end_date: date) -> pd.DataFrame:
+    if frame is None or len(frame) == 0:
+        return pd.DataFrame(columns=list(OHLC_COLUMNS), dtype="float64")
+    mask = (frame.index >= pd.Timestamp(start_date)) & (frame.index <= pd.Timestamp(end_date))
+    out = frame.loc[mask]
+    if out.empty:
+        return pd.DataFrame(columns=list(OHLC_COLUMNS), dtype="float64")
+    return normalize_ohlc_frame(out)
 
 
 def load_cached_stock_series(symbol: str) -> pd.Series:
@@ -270,7 +482,6 @@ def save_cached_ranges(
     ranges: Iterable[Tuple[date, date]],
     has_fallback: bool = False,
 ) -> None:
-    meta_path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "ranges": [
             {"start": start_date.isoformat(), "end": end_date.isoformat()}
@@ -279,9 +490,9 @@ def save_cached_ranges(
     }
     if has_fallback:
         payload["has_fallback"] = True
-    meta_path.write_text(
+    _atomic_write_text(
+        meta_path,
         json.dumps(payload, ensure_ascii=False, indent=2),
-        encoding="utf-8",
     )
 
 
@@ -296,6 +507,15 @@ def save_cached_stock_ranges(symbol: str, ranges: Iterable[Tuple[date, date]], h
 
 def load_cached_stock_fallback(symbol: str) -> bool:
     return load_cached_fallback_flag(stock_cache_meta_file(symbol))
+
+
+def load_cached_stock_ohlc_ranges(symbol: str) -> List[Tuple[date, date]]:
+    return load_cached_ranges(stock_ohlc_cache_file(symbol), stock_ohlc_cache_meta_file(symbol))
+
+
+def save_cached_stock_ohlc_ranges(symbol: str, ranges: Iterable[Tuple[date, date]]) -> None:
+    ensure_stock_cache_dirs()
+    save_cached_ranges(stock_ohlc_cache_meta_file(symbol), ranges)
 
 
 def load_cached_benchmark_ranges(code: str) -> List[Tuple[date, date]]:

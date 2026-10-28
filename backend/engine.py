@@ -91,14 +91,71 @@ def build_plan_weight_vector(
         if idx is not None:
             vector[idx] = float(weight)
     return vector
+
+
+def _previous_close_matrix(close_df: pd.DataFrame) -> np.ndarray:
+    """Previous available close per symbol, with suspensions forward-filled.
+
+    A suspended day carries no quote (NaN close), so the next traded day's
+    return spans the whole gap. Both the NAV and the candle path must use the
+    same denominator for that to hold: the last *available* close, not the
+    literal previous row. Computing it explicitly also keeps the semantics
+    stable across pandas versions (``pct_change(fill_method=...)`` changed its
+    default in pandas 2.1).
+    """
+    return close_df.ffill().shift(1).to_numpy(dtype=np.float64, copy=True)
+
+
 def prepare_nav_data(close_df: pd.DataFrame) -> Tuple[np.ndarray, Dict[str, int], Dict[int, str], pd.DatetimeIndex]:
     """Precompute shared NAV calculation data to avoid redundant work across rebalance mode comparisons."""
     trading_dates = close_df.index
-    returns_array = close_df.pct_change().to_numpy(dtype=np.float64, copy=True)
+    values = close_df.to_numpy(dtype=np.float64, copy=True)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        returns_array = values / _previous_close_matrix(close_df) - 1.0
     np.nan_to_num(returns_array, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
     symbol_index = {code: idx for idx, code in enumerate(close_df.columns)}
     reverse_index = {idx: code for code, idx in symbol_index.items()}
     return returns_array, symbol_index, reverse_index, trading_dates
+
+
+def prepare_ohlc_data(
+    open_df: pd.DataFrame,
+    high_df: pd.DataFrame,
+    low_df: pd.DataFrame,
+    close_df: pd.DataFrame,
+) -> Dict[str, np.ndarray]:
+    """Convert per-symbol OHLC into ratios versus each stock's previous close.
+
+    Ratios (instead of absolute prices) let the simulator reuse the daily
+    portfolio weights it already maintains, so the synthetic index candles stay
+    consistent with the NAV series even as weights drift and rebalance.
+
+    The denominator is the same forward-filled previous close used by
+    ``prepare_nav_data``; a suspended stock therefore contributes a flat
+    intraday candle (ratio 1.0) but its resumption-day open/high/low still span
+    the real gap, matching the NAV return for that day.
+    """
+    if close_df.empty:
+        raise ValueError("收盘价矩阵为空，无法构建 K 线")
+    previous_close = _previous_close_matrix(close_df)
+    columns = close_df.columns
+
+    def ratio(frame: pd.DataFrame) -> np.ndarray:
+        aligned = frame.reindex(index=close_df.index, columns=columns)
+        values = aligned.to_numpy(dtype=np.float64, copy=True)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            ratios = values / previous_close
+        # A missing/suspended quote contributes no intraday move (ratio 1.0),
+        # matching the engine's hold-cash treatment of NaN close returns.
+        np.nan_to_num(ratios, copy=False, nan=1.0, posinf=1.0, neginf=1.0)
+        return ratios
+
+    return {
+        "open": ratio(open_df),
+        "high": ratio(high_df),
+        "low": ratio(low_df),
+    }
+
 
 def compute_all_mode_navs(
     returns_array: np.ndarray,
@@ -113,10 +170,14 @@ def compute_all_mode_navs(
     slippage_rate: float = 0.0,
     daily_rf_rate: float = 0.0,
     track_top_n: int = 0,
+    ohlc_data: Optional[Dict[str, np.ndarray]] = None,
 ) -> Tuple[pd.Series, List[str], List[Dict[str, object]], Optional[List[Dict[str, object]]], Dict[str, pd.Series]]:
     """Compute primary NAV (with full details) + comparison NAVs in a single pass.
 
     Returns (primary_nav, applied_rebalances, cost_log, holdings_evolution, comparison_navs).
+    When ``ohlc_data`` is provided, the primary series' ``attrs["nav_ohlc"]``
+    holds the synthetic index open/high/low/close path generated from the same
+    daily weights (close matches the NAV exactly).
     """
     date_count = len(trading_dates)
     symbol_count = len(symbol_index)
@@ -178,6 +239,18 @@ def compute_all_mode_navs(
     primary_cash = plan_vectors[active_plan_idx][2]
     primary_nav = np.empty(date_count, dtype=np.float64)
     primary_nav[0] = 1.0
+    primary_open: Optional[np.ndarray] = None
+    primary_high: Optional[np.ndarray] = None
+    primary_low: Optional[np.ndarray] = None
+    if ohlc_data is not None:
+        for key in ("open", "high", "low"):
+            values = ohlc_data.get(key)
+            if values is None or values.shape != (date_count, symbol_count):
+                raise ValueError(f"OHLC 矩阵 {key} 形状与行情不一致")
+        primary_open = np.empty(date_count, dtype=np.float64)
+        primary_high = np.empty(date_count, dtype=np.float64)
+        primary_low = np.empty(date_count, dtype=np.float64)
+        primary_open[0] = primary_high[0] = primary_low[0] = 1.0
     applied_rebalances = [str(first_trade_day.date())]
     cost_log: List[Dict[str, object]] = []
     position_values = np.empty(symbol_count, dtype=np.float64)
@@ -204,6 +277,23 @@ def compute_all_mode_navs(
     # ── Day-by-day simulation ──
     for idx in range(1, date_count):
         today_ret = returns_array[idx]
+
+        # --- Primary intraday path (for the synthetic index candlestick) ---
+        # Uses the weights and cash held at the previous close, i.e. before
+        # today's drift/rebalance, which is exactly the position that experienced
+        # today's open/high/low.
+        if primary_open is not None and ohlc_data is not None:
+            prev_nav = primary_nav[idx - 1]
+            cash_return = primary_cash * daily_rf_rate
+            open_value = prev_nav * (
+                1.0 + float(np.dot(primary_weights, ohlc_data["open"][idx] - 1.0)) + cash_return
+            )
+            high_value = prev_nav * (
+                1.0 + float(np.dot(primary_weights, ohlc_data["high"][idx] - 1.0)) + cash_return
+            )
+            low_value = prev_nav * (
+                1.0 + float(np.dot(primary_weights, ohlc_data["low"][idx] - 1.0)) + cash_return
+            )
 
         # --- Primary ---
         equity_ret = float(np.dot(primary_weights, today_ret))
@@ -239,6 +329,15 @@ def compute_all_mode_navs(
             np.copyto(primary_weights, target_w)
             primary_cash = target_c
             applied_rebalances.append(date_strs[idx])
+
+        # Close the candle after rebalance costs so it always matches the NAV.
+        if primary_open is not None and primary_high is not None and primary_low is not None:
+            close_value = primary_nav[idx]
+            high_value = max(high_value, open_value, close_value)
+            low_value = min(low_value, open_value, close_value)
+            primary_open[idx] = max(open_value, 1e-12)
+            primary_high[idx] = max(high_value, 1e-12)
+            primary_low[idx] = max(low_value, 1e-12)
 
         # Record primary holdings
         if holdings_matrix is not None:
@@ -280,6 +379,14 @@ def compute_all_mode_navs(
                 comp_cash[mode] = target_c
 
     primary_series = pd.Series(primary_nav, index=trading_dates, name="nav")
+    if primary_open is not None and primary_high is not None and primary_low is not None:
+        primary_series.attrs["nav_ohlc"] = {
+            "dates": date_strs,
+            "open": [round(float(v), 8) for v in primary_open],
+            "high": [round(float(v), 8) for v in primary_high],
+            "low": [round(float(v), 8) for v in primary_low],
+            "close": [round(float(v), 8) for v in primary_nav],
+        }
     comparison_series = {
         mode: pd.Series(comp_nav[mode], index=trading_dates, name=f"nav_{mode}")
         for mode in comparison_modes

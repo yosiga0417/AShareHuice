@@ -16,7 +16,7 @@
   </script>
   <!-- ECharts 已本地化（vendor/echarts.min.js，v5.6.0，Apache-2.0），离线可用，无需外部 CDN -->
   <script src="vendor/echarts.min.js"></script>
-  <link rel="stylesheet" href="styles.css?v=20261026-weight3" />
+  <link rel="stylesheet" href="styles.css?v=20261027-ma2" />
 </head>
 <body>
 
@@ -28,7 +28,7 @@
   <symbol id="i-chart-line" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v16a2 2 0 0 0 2 2h16"/><path d="m19 9-5 5-4-4-3 3"/></symbol>
   <symbol id="i-save" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15.2 3a2 2 0 0 1 1.4.6l3.8 3.8a2 2 0 0 1 .6 1.4V19a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z"/><path d="M17 21v-7a1 1 0 0 0-1-1H8a1 1 0 0 0-1 1v7"/><path d="M7 3v4a1 1 0 0 0 1 1h7"/></symbol>
   <symbol id="i-clock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></symbol>
-  <symbol id="i-panel-left" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/></symbol>
+  <symbol id="i-panel-left-open" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/><path d="m13 15 3-3-3-3"/></symbol>
   <symbol id="i-panel-left-close" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/><path d="m16 15-3-3 3-3"/></symbol>
   <symbol id="i-chevron-down" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></symbol>
   <symbol id="i-chevron-right" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></symbol>
@@ -60,13 +60,18 @@
 
   <!-- ── 顶栏 ── -->
   <header class="app-header">
-    <div class="brand">
-      <span class="brand-mark" aria-hidden="true">
-        <svg class="icon brand-icon"><use href="#i-chart-line"/></svg>
-      </span>
-      <div class="brand-text">
-        <h1>A股自设指数净值回测工具</h1>
-        <span class="brand-sub">自定义指数 · 策略研究工作台</span>
+    <div class="header-leading">
+      <button type="button" class="icon-btn" id="sidebarToggle" title="折叠配置面板" aria-label="折叠配置面板" aria-controls="sidebar" aria-expanded="true">
+        <svg class="icon"><use href="#i-panel-left-close"/></svg>
+      </button>
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">
+          <svg class="icon brand-icon"><use href="#i-chart-line"/></svg>
+        </span>
+        <div class="brand-text">
+          <h1>A股自设指数净值回测工具</h1>
+          <span class="brand-sub">自定义指数 · 策略研究工作台</span>
+        </div>
       </div>
     </div>
     <div class="header-status">
@@ -88,9 +93,6 @@
       <button type="button" class="icon-btn" id="themeToggle" data-theme="dark" title="切换深色/浅色主题" aria-label="切换主题">
         <svg class="icon icon-sun"><use href="#i-sun"/></svg>
         <svg class="icon icon-moon"><use href="#i-moon"/></svg>
-      </button>
-      <button type="button" class="icon-btn" id="sidebarToggle" title="折叠配置面板" aria-label="折叠配置面板">
-        <svg class="icon"><use href="#i-panel-left"/></svg>
       </button>
     </div>
   </header>
@@ -317,8 +319,39 @@
       <div class="chart-toolbar">
         <div class="seg" role="group" aria-label="图表视图">
           <button type="button" class="seg-btn active" data-view="nav" title="净值曲线与回撤" aria-pressed="true">净值</button>
+          <button type="button" class="seg-btn" data-view="candle" title="组合指数蜡烛图（开高低收，可切换日/周/月/季/年）" aria-pressed="false">K线</button>
           <button type="button" class="seg-btn" data-view="drawdown" title="仅查看回撤" aria-pressed="false">回撤</button>
           <button type="button" class="seg-btn" data-view="excess" title="组合相对基准的超额收益" aria-pressed="false">超额收益</button>
+        </div>
+        <div class="seg candle-period is-hidden" id="candlePeriodSeg" role="group" aria-label="K线周期">
+          <button type="button" class="seg-btn" data-period="day" aria-pressed="true" title="日K：每根蜡烛一个交易日">日K</button>
+          <button type="button" class="seg-btn" data-period="week" aria-pressed="false" title="周K：每根蜡烛一个自然周（周一至周日）">周K</button>
+          <button type="button" class="seg-btn" data-period="month" aria-pressed="false" title="月K：每根蜡烛一个自然月">月K</button>
+          <button type="button" class="seg-btn" data-period="quarter" aria-pressed="false" title="季K：每根蜡烛一个自然季度">季K</button>
+          <button type="button" class="seg-btn" data-period="year" aria-pressed="false" title="年K：每根蜡烛一个自然年">年K</button>
+        </div>
+        <div class="ma-control is-hidden" id="maControls">
+          <button type="button" class="toolbar-btn" id="maToggleBtn" aria-expanded="false" aria-haspopup="dialog" aria-controls="maPanel" title="选择显示哪些均线，或添加自定义周期">
+            <svg class="icon" aria-hidden="true"><use href="#i-chart-line"/></svg><span>均线</span>
+            <span class="ma-count" id="maCount" aria-hidden="true">5</span>
+          </button>
+          <div class="ma-panel is-hidden" id="maPanel" role="dialog" aria-label="均线设置">
+            <div class="ma-panel-head">
+              <span class="ma-panel-title">均线设置</span>
+              <button type="button" class="ma-close" id="maCloseBtn" aria-label="关闭均线设置" title="关闭">×</button>
+            </div>
+            <div class="ma-checklist" id="maChecklist"></div>
+            <div class="ma-custom-row">
+              <input id="maCustomInput" type="number" min="1" max="250" step="1" placeholder="自定义周期，如 120" aria-label="自定义均线周期" />
+              <button id="maAddBtn" type="button" class="secondary sm">添加</button>
+            </div>
+            <div class="ma-panel-actions">
+              <button id="maAllBtn" type="button" class="light sm">全选</button>
+              <button id="maNoneBtn" type="button" class="light sm">全不选</button>
+              <button id="maResetBtn" type="button" class="light sm">恢复默认</button>
+            </div>
+            <div id="maError" class="field-error" aria-live="polite"></div>
+          </div>
         </div>
         <div class="benchmark-bar" id="benchmarkBar">
           <span class="bm-section-label">基准</span>
@@ -415,18 +448,363 @@
 
 <script>
 /* ════════════════════════════════════════════════════════════════
-   工作台 UI：图表视图（净值 / 回撤 / 超额收益）
+   工作台 UI：图表视图（净值 / K线 / 回撤 / 超额收益）
    在 app.js 之前加载，包装 echarts.init/setOption，使视图切换在
    app.js 每次重绘图表后仍保持生效；不修改 app.js 任何行为。
   ════════════════════════════════════════════════════════════════ */
 (function () {
-  var VIEW = { NAV: 'nav', DD: 'drawdown', EXCESS: 'excess' };
+  var VIEW = { NAV: 'nav', CANDLE: 'candle', DD: 'drawdown', EXCESS: 'excess' };
   var current = VIEW.NAV;
+
+  /* ════════════════════════════════════════════════════════════════
+     K 线周期：日/周/月/季/年。后端只合成日线 OHLC，这里按自然周期
+     聚合成分组指数的周/月/季/年蜡烛，选择保存在 localStorage。
+     ════════════════════════════════════════════════════════════════ */
+  var PERIOD = { DAY: 'day', WEEK: 'week', MONTH: 'month', QUARTER: 'quarter', YEAR: 'year' };
+  var PERIOD_LABELS = { day: '日K', week: '周K', month: '月K', quarter: '季K', year: '年K' };
+  var PERIOD_STORAGE_KEY = 'bt_candle_period_v1';
+  var candlePeriod = PERIOD.DAY;
 
   /* 安全访问 app.js 顶层 const state：app.js 未加载时不抛 ReferenceError */
   window.__btState = function () {
     return typeof state !== 'undefined' ? state : null;
   };
+
+  /* ════════════════════════════════════════════════════════════════
+     K 线均线：默认 MA5/10/20/30/60，可勾选显示/隐藏，也可添加自定义周期。
+     设置保存在 localStorage，重绘图表时按同一份配置重算。
+     ════════════════════════════════════════════════════════════════ */
+  var MA_STORAGE_KEY = 'bt_ma_settings_v1';
+  var MA_DEFAULT_PERIODS = [5, 10, 20, 30, 60];
+  var MA_MAX_PERIOD = 250;
+  var MA_COLORS = ['#fbbf24', '#38bdf8', '#a78bfa', '#f472b6', '#fb923c',
+                   '#22d3ee', '#c084fc', '#facc15', '#e879f9', '#94a3b8'];
+  /* 自定义均线单独用一套色板，颜色只由周期决定（period % 长度），
+     增删其他均线不会让已有均线换色。 */
+  var MA_CUSTOM_COLORS = ['#22d3ee', '#c084fc', '#facc15', '#e879f9', '#94a3b8', '#fb7185',
+                          '#4ade80', '#60a5fa', '#fdba74', '#a3e635', '#f0abfc', '#5eead4'];
+  var maPeriods = MA_DEFAULT_PERIODS.slice();
+  var maVisible = {};
+  MA_DEFAULT_PERIODS.forEach(function (period) { maVisible[period] = true; });
+  var maUiReady = false;
+
+  function maColor(period) {
+    var defaultIndex = MA_DEFAULT_PERIODS.indexOf(period);
+    if (defaultIndex >= 0) return MA_COLORS[defaultIndex];
+    // 自定义均线的颜色只由周期本身决定：增删其他均线不会让已有均线换色。
+    return MA_CUSTOM_COLORS[Number(period) % MA_CUSTOM_COLORS.length];
+  }
+
+  function loadMaSettings() {
+    if (typeof localStorage === 'undefined') return;
+    try {
+      var raw = localStorage.getItem(MA_STORAGE_KEY);
+      if (!raw) return;
+      var data = JSON.parse(raw);
+      if (!data || !Array.isArray(data.periods)) return;
+      var periods = MA_DEFAULT_PERIODS.slice();
+      data.periods.forEach(function (value) {
+        var period = Number(value);
+        if (Number.isInteger(period) && period >= 1 && period <= MA_MAX_PERIOD &&
+            periods.indexOf(period) < 0) {
+          periods.push(period);
+        }
+      });
+      periods.sort(function (a, b) { return a - b; });
+      maPeriods = periods;
+      var storedVisible = data.visible && typeof data.visible === 'object' ? data.visible : null;
+      var visible = {};
+      maPeriods.forEach(function (period) {
+        var key = String(period);
+        visible[period] = storedVisible && Object.prototype.hasOwnProperty.call(storedVisible, key)
+          ? storedVisible[key] === true
+          : true;
+      });
+      maVisible = visible;
+    } catch (e) { /* 设置损坏时保持默认 */ }
+  }
+
+  function saveMaSettings() {
+    if (typeof localStorage === 'undefined') return;
+    try {
+      localStorage.setItem(MA_STORAGE_KEY, JSON.stringify({ periods: maPeriods, visible: maVisible }));
+    } catch (e) { /* 忽略配额错误 */ }
+  }
+
+  function visibleMaPeriods() {
+    return maPeriods.filter(function (period) { return !!maVisible[period]; });
+  }
+
+  /* 简单移动平均；遇到空值重置窗口，避免把缺失点当成 0。 */
+  function computeMa(values, period) {
+    var out = new Array(values.length);
+    for (var i = 0; i < values.length; i++) out[i] = null;
+    if (!period || period < 1) return out;
+    var windowValues = [];
+    var sum = 0;
+    for (var idx = 0; idx < values.length; idx++) {
+      var value = values[idx];
+      if (value == null || !isFinite(value)) {
+        windowValues = [];
+        sum = 0;
+        continue;
+      }
+      windowValues.push(value);
+      sum += value;
+      if (windowValues.length > period) sum -= windowValues.shift();
+      if (windowValues.length === period) out[idx] = sum / period;
+    }
+    return out;
+  }
+
+  function closeMaPanel() {
+    var panel = document.getElementById('maPanel');
+    var toggle = document.getElementById('maToggleBtn');
+    if (panel) panel.classList.add('is-hidden');
+    if (toggle) toggle.setAttribute('aria-expanded', 'false');
+  }
+
+  /* 均线浮层默认与按钮左对齐；工具栏在窄屏换行或按钮靠右时可能超出视口，
+     打开后按实际布局把它拉回可视区域。 */
+  function clampMaPanel() {
+    var panel = document.getElementById('maPanel');
+    if (!panel || !panel.style || typeof panel.getBoundingClientRect !== 'function') return;
+    if (typeof window === 'undefined' || !window.innerWidth) return;
+    panel.style.transform = '';
+    var rect = panel.getBoundingClientRect();
+    if (!rect || !rect.width) return;
+    var margin = 12;
+    var viewport = window.innerWidth;
+    var dx = 0;
+    if (rect.right > viewport - margin) dx = viewport - margin - rect.right;
+    if (rect.left + dx < margin) dx = margin - rect.left;
+    if (dx) panel.style.transform = 'translateX(' + Math.round(dx) + 'px)';
+  }
+
+  function setMaError(text) {
+    var el = document.getElementById('maError');
+    if (el) el.textContent = text || '';
+  }
+
+  function updateMaCount() {
+    var countEl = document.getElementById('maCount');
+    var toggle = document.getElementById('maToggleBtn');
+    var total = maPeriods.length;
+    var shown = visibleMaPeriods().length;
+    if (countEl) countEl.textContent = String(shown);
+    if (toggle) {
+      toggle.setAttribute('title',
+        '已显示 ' + shown + ' / ' + total + ' 条均线，点击选择要显示哪些均线');
+      toggle.classList.toggle('is-filtered', shown < total);
+    }
+  }
+
+  function renderMaChecklist() {
+    var checklist = document.getElementById('maChecklist');
+    if (!checklist) return;
+    checklist.innerHTML = maPeriods.map(function (period) {
+      var isDefault = MA_DEFAULT_PERIODS.indexOf(period) >= 0;
+      return '<div class="ma-item">' +
+        '<label class="ma-item-main">' +
+          '<input type="checkbox" data-ma-period="' + period + '"' + (maVisible[period] ? ' checked' : '') + ' />' +
+          '<span class="ma-dot" style="background:' + maColor(period) + ';"></span>' +
+          '<span>MA' + period + '</span>' +
+        '</label>' +
+        (isDefault ? '' :
+          '<button type="button" class="ma-remove" data-ma-remove="' + period +
+          '" aria-label="删除 MA' + period + '" title="删除 MA' + period + '">×</button>') +
+        '</div>';
+    }).join('');
+    updateMaCount();
+  }
+
+  function applyMaChange() {
+    saveMaSettings();
+    updateMaCount();
+    if (window.ChartView && typeof window.ChartView.applyAll === 'function') {
+      window.ChartView.applyAll();
+    }
+  }
+
+  function addCustomMa() {
+    var input = document.getElementById('maCustomInput');
+    if (!input) return;
+    var period = Number(input.value);
+    if (!Number.isInteger(period) || period < 1 || period > MA_MAX_PERIOD) {
+      setMaError('请输入 1–' + MA_MAX_PERIOD + ' 的整数周期');
+      input.focus();
+      return;
+    }
+    if (maPeriods.indexOf(period) >= 0) {
+      setMaError('MA' + period + ' 已存在');
+      input.focus();
+      return;
+    }
+    maPeriods.push(period);
+    maPeriods.sort(function (a, b) { return a - b; });
+    maVisible[period] = true;
+    input.value = '';
+    setMaError('');
+    renderMaChecklist();
+    applyMaChange();
+    input.focus();
+  }
+
+  function ensureMaUi() {
+    var controls = document.getElementById('maControls');
+    var toggle = document.getElementById('maToggleBtn');
+    var panel = document.getElementById('maPanel');
+    var checklist = document.getElementById('maChecklist');
+    if (!controls || !toggle || !panel || !checklist) return;
+    if (maUiReady) return;
+    maUiReady = true;
+
+    toggle.addEventListener('click', function (event) {
+      event.stopPropagation();
+      var willOpen = panel.classList.contains('is-hidden');
+      panel.classList.toggle('is-hidden', !willOpen);
+      toggle.setAttribute('aria-expanded', String(willOpen));
+      if (willOpen) {
+        setMaError('');
+        updateMaCount();
+        clampMaPanel();
+        var input = document.getElementById('maCustomInput');
+        if (input) input.focus();
+      }
+    });
+    panel.addEventListener('click', function (event) { event.stopPropagation(); });
+    var closeBtn = document.getElementById('maCloseBtn');
+    if (closeBtn) closeBtn.addEventListener('click', function (event) {
+      event.stopPropagation();
+      closeMaPanel();
+      toggle.focus();
+    });
+    document.addEventListener('click', closeMaPanel);
+    document.addEventListener('keydown', function (event) {
+      if (event.key === 'Escape') closeMaPanel();
+    });
+    if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+      window.addEventListener('resize', function () {
+        if (!panel.classList.contains('is-hidden')) clampMaPanel();
+      });
+    }
+
+    checklist.addEventListener('change', function (event) {
+      var target = event.target;
+      if (!target || !target.getAttribute) return;
+      var raw = target.getAttribute('data-ma-period');
+      if (raw == null) return;
+      var period = Number(raw);
+      if (!period) return;
+      maVisible[period] = !!target.checked;
+      applyMaChange();
+    });
+    checklist.addEventListener('click', function (event) {
+      var target = event.target;
+      if (!target || typeof target.closest !== 'function') return;
+      var removeBtn = target.closest('[data-ma-remove]');
+      if (!removeBtn) return;
+      var period = Number(removeBtn.getAttribute('data-ma-remove'));
+      if (!period || MA_DEFAULT_PERIODS.indexOf(period) >= 0) return;
+      maPeriods = maPeriods.filter(function (item) { return item !== period; });
+      delete maVisible[period];
+      setMaError('');
+      renderMaChecklist();
+      applyMaChange();
+    });
+
+    var addBtn = document.getElementById('maAddBtn');
+    if (addBtn) addBtn.addEventListener('click', addCustomMa);
+    var customInput = document.getElementById('maCustomInput');
+    if (customInput) {
+      customInput.addEventListener('keydown', function (event) {
+        if (event.key === 'Enter') {
+          event.preventDefault();
+          addCustomMa();
+        }
+      });
+    }
+    var allBtn = document.getElementById('maAllBtn');
+    if (allBtn) allBtn.addEventListener('click', function () {
+      maPeriods.forEach(function (period) { maVisible[period] = true; });
+      renderMaChecklist();
+      applyMaChange();
+    });
+    var noneBtn = document.getElementById('maNoneBtn');
+    if (noneBtn) noneBtn.addEventListener('click', function () {
+      maPeriods.forEach(function (period) { maVisible[period] = false; });
+      renderMaChecklist();
+      applyMaChange();
+    });
+    var resetBtn = document.getElementById('maResetBtn');
+    if (resetBtn) resetBtn.addEventListener('click', function () {
+      maPeriods = MA_DEFAULT_PERIODS.slice();
+      maVisible = {};
+      maPeriods.forEach(function (period) { maVisible[period] = true; });
+      setMaError('');
+      renderMaChecklist();
+      applyMaChange();
+    });
+
+    renderMaChecklist();
+  }
+
+  function syncMaControls(show) {
+    var controls = document.getElementById('maControls');
+    var periodSeg = document.getElementById('candlePeriodSeg');
+    show = !!show && current === VIEW.CANDLE;
+    if (controls) {
+      controls.classList.toggle('is-hidden', !show);
+      if (!show) closeMaPanel();
+      else ensureMaUi();
+    }
+    if (periodSeg) {
+      periodSeg.classList.toggle('is-hidden', !show);
+      if (show) { ensurePeriodUi(); syncPeriodButtons(); }
+    }
+  }
+
+  /* 周期分段按钮的选中态（与视图按钮共用 seg-btn 外观，但不带 data-view，
+     因此不会被视图切换的事件委托误当成视图按钮）。 */
+  function syncPeriodButtons() {
+    var seg = document.getElementById('candlePeriodSeg');
+    if (!seg || typeof seg.querySelectorAll !== 'function') return;
+    Array.prototype.slice.call(seg.querySelectorAll('[data-period]')).forEach(function (btn) {
+      var active = btn.getAttribute('data-period') === candlePeriod;
+      btn.classList.toggle('active', active);
+      btn.setAttribute('aria-pressed', String(active));
+    });
+  }
+
+  var periodUiReady = false;
+
+  /* 切换周期：持久化 + 按钮态 + 重绘。周期根数变化后，原先按百分比记录的
+     缩放区间不再有意义，因此回到全区间，避免切到年K只剩一根蜡烛。 */
+  function applyCandlePeriod(period) {
+    if (!PERIOD_LABELS[period]) return false;
+    candlePeriod = period;
+    saveCandlePeriod();
+    syncPeriodButtons();
+    if (typeof resetNavZoom === 'function') resetNavZoom();
+    refreshView();
+    return true;
+  }
+
+  function ensurePeriodUi() {
+    var seg = document.getElementById('candlePeriodSeg');
+    if (!seg || periodUiReady) return;
+    periodUiReady = true;
+    syncPeriodButtons();
+    seg.addEventListener('click', function (event) {
+      var target = event.target;
+      if (!target || typeof target.closest !== 'function') return;
+      var btn = target.closest('[data-period]');
+      if (!btn || (typeof seg.contains === 'function' && !seg.contains(btn))) return;
+      var period = btn.getAttribute('data-period');
+      if (!period || !PERIOD_LABELS[period] || period === candlePeriod) return;
+      applyCandlePeriod(period);
+    });
+  }
 
   function setViewHint(text) {
     var el = document.getElementById('viewHint');
@@ -631,11 +1009,442 @@
     };
   }
 
+  /* 组合指数 K 线：后端把成分股日线开高低收按每日持仓权重合成组合
+     开/高/低/收（收盘与净值严格一致）。这里只负责画图，不再拉数据。 */
+  function candlePalette() {
+    var hasUI = (typeof UI !== 'undefined');
+    return {
+      up: hasUI ? (UI.up || '#d92b2b') : '#d92b2b',
+      down: hasUI ? (UI.down || '#0a8f5b') : '#0a8f5b',
+      subtle: hasUI ? (UI.subtle || '#64748b') : '#64748b',
+      axisStrong: hasUI ? (UI.textMuted || '#334155') : '#334155',
+      line: hasUI ? (UI.border || '#dbe4ef') : '#dbe4ef',
+      warning: hasUI ? (UI.warning || '#c2410c') : '#c2410c'
+    };
+  }
+
+  /* ── K 线周期聚合 ── */
+  function pad2(value) { return value < 10 ? '0' + value : String(value); }
+
+  function parseYmd(text) {
+    var m = /^(\d{4})-(\d{1,2})-(\d{1,2})/.exec(String(text == null ? '' : text));
+    if (!m) return null;
+    return { y: Number(m[1]), m: Number(m[2]), d: Number(m[3]) };
+  }
+
+  function ymdText(y, m, d) { return y + '-' + pad2(m) + '-' + pad2(d); }
+
+  function daysInMonth(y, m) { return new Date(Date.UTC(y, m, 0)).getUTCDate(); }
+
+  function numOrNull(value) {
+    if (value == null || value === '') return null;
+    var num = Number(value);
+    return isFinite(num) ? num : null;
+  }
+
+  /* ISO 周（周一为一周第一天）：周序号 + 该周周日日期 */
+  function isoWeekOf(ymd) {
+    var time = Date.UTC(ymd.y, ymd.m - 1, ymd.d);
+    var dow = new Date(time).getUTCDay();
+    var isoDay = dow === 0 ? 7 : dow;
+    var thursday = time + (4 - isoDay) * 86400000;
+    var weekYear = new Date(thursday).getUTCFullYear();
+    var week = Math.floor((thursday - Date.UTC(weekYear, 0, 1)) / 86400000 / 7) + 1;
+    var sunday = new Date(time + (7 - isoDay) * 86400000);
+    var label = weekYear + '-W' + pad2(week);
+    return {
+      key: label,
+      label: label,
+      endOfPeriod: ymdText(sunday.getUTCFullYear(), sunday.getUTCMonth() + 1, sunday.getUTCDate())
+    };
+  }
+
+  /* 日线日期归入所在自然周期，endOfPeriod 是该周期最后一个自然日 */
+  function periodBucketOf(period, ymd) {
+    if (period === PERIOD.WEEK) return isoWeekOf(ymd);
+    if (period === PERIOD.MONTH) {
+      var labelM = ymd.y + '-' + pad2(ymd.m);
+      return { key: labelM, label: labelM, endOfPeriod: ymdText(ymd.y, ymd.m, daysInMonth(ymd.y, ymd.m)) };
+    }
+    if (period === PERIOD.QUARTER) {
+      var q = Math.floor((ymd.m - 1) / 3) + 1;
+      var labelQ = ymd.y + '-Q' + q;
+      return { key: labelQ, label: labelQ, endOfPeriod: ymdText(ymd.y, q * 3, daysInMonth(ymd.y, q * 3)) };
+    }
+    var labelY = String(ymd.y);
+    return { key: labelY, label: labelY, endOfPeriod: ymdText(ymd.y, 12, 31) };
+  }
+
+  /* 该自然周期最后一个可能的交易日：周末回退到周五。没有交易日历，
+     用它区分「回测区间没覆盖完整个周期」和「周期本来就以周末收尾」。
+     长假（如春节）仍可能把月末截断，此时只在极少数旧结果上误判。 */
+  function lastPossibleTradingDay(endText) {
+    var ymd = parseYmd(endText);
+    if (!ymd) return null;
+    var time = Date.UTC(ymd.y, ymd.m - 1, ymd.d);
+    var dow = new Date(time).getUTCDay();
+    var back = dow === 0 ? 2 : (dow === 6 ? 1 : 0);
+    var last = new Date(time - back * 86400000);
+    return ymdText(last.getUTCFullYear(), last.getUTCMonth() + 1, last.getUTCDate());
+  }
+
+  /* 把日线 OHLC 聚合成周/月/季/年 K：开盘取区间内首个有效开盘，收盘取
+     最后一个有效收盘，最高/最低取区间极值；日 K 原样透传（含空数据占位），
+     保证与净值曲线逐点对齐。barOfDate 用于把调仓日映射到所属蜡烛。
+
+     rangeEnd 是回测请求的结束日（旧结果可能缺失）。判断「本期未完」必须
+     用它和周期最后一天比较，不能用最后交易日：周 K 永远不会有周六/周日
+     行情，否则每个工作日结束的回测都会把最后一根周 K 标成未完成。 */
+  function aggregateOhlc(period, dates, ohlc, rangeEnd) {
+    var open = (ohlc && ohlc.open) || [];
+    var high = (ohlc && ohlc.high) || [];
+    var low = (ohlc && ohlc.low) || [];
+    var close = (ohlc && ohlc.close) || [];
+    var out = { dates: [], open: [], high: [], low: [], close: [], spans: [], barOfDate: {} };
+    if (!dates || !dates.length) return out;
+    var i, dateText;
+
+    if (!period || period === PERIOD.DAY) {
+      for (i = 0; i < dates.length; i++) {
+        dateText = dates[i];
+        out.dates.push(dateText);
+        out.open.push(numOrNull(open[i]));
+        out.high.push(numOrNull(high[i]));
+        out.low.push(numOrNull(low[i]));
+        out.close.push(numOrNull(close[i]));
+        out.spans.push({ start: dateText, end: dateText, endOfPeriod: dateText, incomplete: false });
+        out.barOfDate[dateText] = i;
+      }
+      return out;
+    }
+
+    var buckets = [];
+    var byKey = {};
+    for (i = 0; i < dates.length; i++) {
+      dateText = dates[i];
+      var ymd = parseYmd(dateText);
+      if (!ymd) continue;
+      var info = periodBucketOf(period, ymd);
+      var bar = byKey[info.key];
+      if (!bar) {
+        bar = byKey[info.key] = {
+          key: info.key, label: info.label, endOfPeriod: info.endOfPeriod,
+          start: dateText, end: dateText,
+          open: null, high: null, low: null, close: null, dates: []
+        };
+        buckets.push(bar);
+      }
+      bar.end = dateText;
+      bar.dates.push(dateText);
+      var o = numOrNull(open[i]), h = numOrNull(high[i]);
+      var l = numOrNull(low[i]), c = numOrNull(close[i]);
+      if (o != null && bar.open == null) bar.open = o;
+      if (h != null) bar.high = bar.high == null ? h : Math.max(bar.high, h);
+      if (l != null) bar.low = bar.low == null ? l : Math.min(bar.low, l);
+      if (c != null) bar.close = c;
+    }
+
+    for (var b = 0; b < buckets.length; b++) {
+      var item = buckets[b];
+      out.dates.push(item.label);
+      out.open.push(item.open);
+      out.high.push(item.high);
+      out.low.push(item.low);
+      out.close.push(item.close);
+      // 只有最后一根可能走到一半：请求结束日已覆盖整个自然周期，或本周期
+      // 最后一个可能的交易日已经出现（周末/节假日收尾）时才算完成。
+      var periodLastDay = item.endOfPeriod ? lastPossibleTradingDay(item.endOfPeriod) : null;
+      var periodCovered = !!rangeEnd && !!item.endOfPeriod && rangeEnd >= item.endOfPeriod;
+      out.spans.push({
+        start: item.start,
+        end: item.end,
+        endOfPeriod: item.endOfPeriod,
+        incomplete: b === buckets.length - 1 && !!item.endOfPeriod && !periodCovered &&
+          item.end < (periodLastDay || item.endOfPeriod)
+      });
+      for (var d = 0; d < item.dates.length; d++) out.barOfDate[item.dates[d]] = b;
+    }
+    return out;
+  }
+
+  function loadCandlePeriod() {
+    if (typeof localStorage === 'undefined') return;
+    try {
+      var stored = localStorage.getItem(PERIOD_STORAGE_KEY);
+      if (stored && PERIOD_LABELS[stored]) candlePeriod = stored;
+    } catch (e) { /* 设置损坏时保持默认日K */ }
+  }
+
+  function saveCandlePeriod() {
+    if (typeof localStorage === 'undefined') return;
+    try { localStorage.setItem(PERIOD_STORAGE_KEY, candlePeriod); } catch (e) { /* 忽略配额错误 */ }
+  }
+
+  /* 把后端 OHLC 按日期对齐到当前净值图的时间轴，避免保存结果与当前
+     基准/对比切换导致的下标错位。 */
+  function alignOhlcToDates(dates, ohlc) {
+    var empty = { open: [], high: [], low: [], close: [] };
+    if (!ohlc || !ohlc.dates || !ohlc.dates.length) return empty;
+    var length = Math.min(
+      ohlc.dates.length,
+      (ohlc.open || []).length,
+      (ohlc.high || []).length,
+      (ohlc.low || []).length,
+      (ohlc.close || []).length
+    );
+    var map = {};
+    for (var i = 0; i < length; i++) map[ohlc.dates[i]] = i;
+    function pick(key) {
+      return dates.map(function (date) {
+        var idx = map[date];
+        if (idx == null) return null;
+        var value = ohlc[key][idx];
+        return value == null ? null : Number(value);
+      });
+    }
+    return { open: pick('open'), high: pick('high'), low: pick('low'), close: pick('close') };
+  }
+
+  function buildCandleOption(dates, ohlc, rebalanceDates, period, rangeEnd) {
+    var pal = candlePalette();
+    var activePeriod = period || PERIOD.DAY;
+    var bars = aggregateOhlc(activePeriod, dates, ohlc, rangeEnd);
+    var open = bars.open;
+    var high = bars.high;
+    var low = bars.low;
+    var close = bars.close;
+    var labels = bars.dates;
+    var labelIndex = {};
+    for (var li = 0; li < labels.length; li++) labelIndex[labels[li]] = li;
+    var visiblePeriods = visibleMaPeriods();
+    var maCache = {};
+    visiblePeriods.forEach(function (period) {
+      maCache[period] = computeMa(close, period);
+    });
+    var maNames = visiblePeriods.map(function (period) { return 'MA' + period; });
+    var candleData = [];
+    var hasData = false;
+    for (var i = 0; i < labels.length; i++) {
+      var o = open[i], h = high[i], l = low[i], c = close[i];
+      if (o == null || h == null || l == null || c == null ||
+          !isFinite(o) || !isFinite(h) || !isFinite(l) || !isFinite(c)) {
+        candleData.push('-');
+        continue;
+      }
+      hasData = true;
+      // ECharts candlestick order: [open, close, lowest, highest]
+      candleData.push([o, c, l, h]);
+    }
+    // 完全没有可用蜡烛时（例如旧结果没有 nav_ohlc）不再叠加均线，
+    // 否则空图上会出现一排 MA5… 图例，看起来像是数据仍在加载。
+    if (!hasData) visiblePeriods = [];
+
+    /* 调仓日按所属周期映射到蜡烛：同一根蜡烛上的多次调仓只标一条竖线 */
+    var rebalanceSet = {};
+    var markLineData = [];
+    var markedBar = {};
+    (rebalanceDates || []).forEach(function (date) {
+      var barIdx = bars.barOfDate[date];
+      if (barIdx == null) return;
+      var barLabel = labels[barIdx];
+      if (markedBar[barIdx]) return;
+      markedBar[barIdx] = true;
+      rebalanceSet[barLabel] = true;
+      markLineData.push({ xAxis: barLabel });
+    });
+
+    function fmt(value) {
+      return value == null || !isFinite(value) ? '--' : Number(value).toFixed(4);
+    }
+
+    return {
+      animationDuration: 300,
+      legend: visiblePeriods.length ? {
+        show: true,
+        data: maNames,
+        type: 'scroll',
+        top: 0,
+        left: 54,
+        right: 18,
+        itemWidth: 14,
+        itemHeight: 8,
+        icon: 'roundRect',
+        selectedMode: false,
+        textStyle: { color: pal.subtle, fontSize: 11 }
+      } : { show: false },
+      tooltip: {
+        trigger: 'axis',
+        confine: true,
+        axisPointer: {
+          type: 'cross',
+          label: { backgroundColor: '#0f172a', borderColor: '#334155', borderWidth: 1, color: '#f8fafc' }
+        },
+        backgroundColor: 'rgba(15,23,42,0.92)',
+        borderColor: '#334155',
+        borderWidth: 1,
+        padding: [9, 12],
+        textStyle: { color: '#f8fafc', fontSize: 12 },
+        formatter: function (params) {
+          if (!params || !params.length) return '';
+          var label = params[0].axisValue;
+          var idx = labelIndex[label];
+          var span = idx == null ? null : bars.spans[idx];
+          var html = '<div style="margin-bottom:6px;font-weight:600;">' + label;
+          if (rebalanceSet[label]) {
+            html += ' <span style="color:#fbbf24;font-size:10px;">▣ 调仓日</span>';
+          }
+          html += '</div>';
+          if (idx == null) return html;
+          if (span && activePeriod !== PERIOD.DAY) {
+            html += '<div style="color:' + pal.subtle + ';font-size:10.5px;margin:-2px 0 6px;">' +
+              span.start + ' ~ ' + span.end +
+              (span.incomplete ? ' <span style="color:' + pal.warning + ';">本期未完</span>' : '') +
+              '</div>';
+          }
+          var o = open[idx], h = high[idx], l = low[idx], c = close[idx];
+          if (o == null || h == null || l == null || c == null) {
+            return html + '<div style="color:' + pal.subtle + ';">' +
+              (activePeriod === PERIOD.DAY ? '该交易日无开高低收数据' : '该周期无开高低收数据') + '</div>';
+          }
+          var prev = idx > 0 ? close[idx - 1] : null;
+          var change = prev != null && prev !== 0 ? (c - prev) / prev : null;
+          var amplitude = prev != null && prev !== 0 ? (h - l) / prev : null;
+          var changeColor = change == null ? pal.subtle : change > 0 ? pal.up : change < 0 ? pal.down : pal.subtle;
+          var changeText = change == null ? '--' :
+            (change > 0 ? '+' : '') + (Math.abs(change) < 5e-7 ? 0 : change * 100).toFixed(2) + '%';
+          var rows = [
+            ['开盘', fmt(o)],
+            ['最高', fmt(h)],
+            ['最低', fmt(l)],
+            ['收盘', fmt(c)],
+            ['涨跌', changeText, changeColor],
+            ['振幅', amplitude == null ? '--' : (amplitude * 100).toFixed(2) + '%']
+          ];
+          html += '<table class="bt-tip-table"><tbody>';
+          for (var r = 0; r < rows.length; r++) {
+            html += '<tr><td>' + rows[r][0] + '</td>' +
+              '<td' + (rows[r][2] ? ' style="color:' + rows[r][2] + ';"' : '') + '>' + rows[r][1] + '</td></tr>';
+          }
+          html += '</tbody></table>';
+          if (visiblePeriods.length) {
+            html += '<div style="border-top:1px solid rgba(148,163,184,.24);margin:6px 0 7px;"></div>';
+            for (var m = 0; m < visiblePeriods.length; m++) {
+              var maPeriod = visiblePeriods[m];
+              var maValue = maCache[maPeriod][idx];
+              html += '<div style="display:flex;justify-content:space-between;gap:18px;font-size:11.5px;line-height:1.7;">' +
+                '<span><span class="bt-tip-dot" style="background:' + maColor(maPeriod) + ';"></span>MA' + maPeriod + '</span>' +
+                '<span>' + (maValue == null ? '--' : Number(maValue).toFixed(4)) + '</span></div>';
+            }
+          }
+          return html;
+        }
+      },
+      grid: { top: visiblePeriods.length ? 38 : 22, left: 54, right: 18, bottom: 64 },
+      dataZoom: buildDataZoom(),
+      xAxis: {
+        type: 'category',
+        data: labels,
+        axisLabel: { color: pal.subtle, fontSize: 11, hideOverlap: true },
+        axisLine: { lineStyle: { color: pal.line } },
+        axisTick: { show: false }
+      },
+      yAxis: {
+        type: 'value',
+        scale: true,
+        axisLabel: { color: pal.axisStrong, fontSize: 11, formatter: function (v) { return Number(v).toFixed(3); } },
+        splitLine: { lineStyle: { color: pal.line, type: 'dashed', opacity: 0.6 } }
+      },
+      graphic: hasData ? [] : [{
+        type: 'text',
+        left: 'center',
+        top: 'middle',
+        silent: true,
+        style: { text: '暂无 K 线数据', fill: pal.subtle, fontSize: 13 }
+      }],
+      series: [{
+        id: 'nav-candle-series',
+        name: '组合指数K线',
+        type: 'candlestick',
+        data: candleData,
+        barMaxWidth: 16,
+        itemStyle: {
+          color: pal.up,
+          color0: pal.down,
+          borderColor: pal.up,
+          borderColor0: pal.down,
+          borderWidth: 1
+        },
+        markLine: markLineData.length ? {
+          silent: true,
+          symbol: 'none',
+          lineStyle: { color: pal.warning, type: 'dashed', width: 1, opacity: 0.35 },
+          label: { show: false },
+          data: markLineData
+        } : undefined
+      }].concat(visiblePeriods.map(function (period, index) {
+        var color = maColor(period);
+        return {
+          id: 'ma-' + period,
+          name: 'MA' + period,
+          type: 'line',
+          data: maCache[period],
+          smooth: true,
+          showSymbol: false,
+          connectNulls: false,
+          xAxisIndex: 0,
+          yAxisIndex: 0,
+          z: 8 + index,
+          lineStyle: { width: 1.2, color: color, opacity: 0.95 },
+          itemStyle: { color: color },
+          emphasis: { disabled: true },
+          tooltip: { show: false }
+        };
+      }))
+    };
+  }
+
+  /* 按当前视图/周期重绘：周期切换、均线设置变更都走这里 */
+  function refreshView() {
+    var st = window.__btState();
+    if (st && st.chart) applyView(st.chart);
+  }
+
   function applyView(chart) {
-    if (current === VIEW.NAV) { setViewHint(''); return; }
+    var chartDom = document.getElementById('navChart');
+    if (chartDom) {
+      chartDom.setAttribute('aria-label',
+        current === VIEW.CANDLE ? '组合指数蜡烛图（' + (PERIOD_LABELS[candlePeriod] || '日K') + '）' :
+        current === VIEW.DD ? '回撤图' :
+        current === VIEW.EXCESS ? '超额收益图' : '净值曲线图');
+    }
+    if (current === VIEW.NAV) { syncMaControls(false); setViewHint(''); return; }
     var src = sourceOption(chart);
     var dates = (src.xAxis && src.xAxis[0] && src.xAxis[0].data) || [];
-    if (!dates.length) { setViewHint(''); return; }
+    var candleState = window.__btState();
+    var ohlc = candleState && candleState.lastResult ? candleState.lastResult.nav_ohlc : null;
+    var hasCandleSource = !!(ohlc && ohlc.dates && ohlc.dates.length);
+    // 还没跑过回测（或旧结果没有 nav_ohlc）时 K 线专属的周期/均线控件
+    // 没有可操作对象，先隐藏，避免空图上出现无意义的设置入口。
+    syncMaControls(current === VIEW.CANDLE && dates.length > 0 && hasCandleSource);
+    if (!dates.length) {
+      setViewHint(current === VIEW.CANDLE ? '先执行一次回测，再查看组合指数 K 线。' : '');
+      return;
+    }
+
+    if (current === VIEW.CANDLE) {
+      var candleRebalances = (candleState && candleState.lastResult && candleState.lastResult.applied_rebalance_dates) || [];
+      var aligned = alignOhlcToDates(dates, ohlc);
+      chart._origSet(buildCandleOption(
+        dates, aligned, candleRebalances, candlePeriod, ohlc && ohlc.end_date
+      ), { notMerge: true });
+      restoreZoom();
+      if (!hasCandleSource) {
+        setViewHint('K 线视图需要开高低收数据：请重新执行一次回测，本次回测会自动拉取并合成组合指数 OHLC。');
+      } else {
+        setViewHint('');
+      }
+      return;
+    }
 
     if (current === VIEW.DD) {
       var dd = findSeries(src, 'drawdown-series');
@@ -741,6 +1550,17 @@
       current = view;
       var st = window.__btState();
       if (view === VIEW.NAV) {
+        /* K 线视图用 notMerge 整体替换图表，它的空态 graphic（「暂无 K 线
+           数据」）与均线图例不属于净值视图；app.js 的净值 setOption 只
+           replaceMerge series，不清理这些组件，所以切回净值时必须显式移除，
+           否则「暂无 K 线数据」与 MA5… 图例会一直压在净值曲线上
+           （重跑回测也不会消失）。 */
+        if (st && st.chart && typeof st.chart._origSet === 'function') {
+          st.chart._origSet(
+            { graphic: [], legend: { show: false } },
+            { replaceMerge: ['graphic', 'legend'] }
+          );
+        }
         if (st && st.lastResult) refreshChart();
         else if (st && st.chart) renderChart([], []);
         setViewHint('');
@@ -749,10 +1569,19 @@
       }
     },
     applyAll: function () {
-      var st = window.__btState();
-      if (st && st.chart) applyView(st.chart);
+      refreshView();
+    },
+    get period() { return candlePeriod; },
+    /* 供按钮事件与测试调用：切换 K 线周期并立即重绘 */
+    setPeriod: function (period) {
+      return applyCandlePeriod(period);
     }
   };
+
+  loadMaSettings();
+  loadCandlePeriod();
+  ensureMaUi();
+  ensurePeriodUi();
 
   if (typeof echarts !== 'undefined') {
     var origInit = echarts.init.bind(echarts);
@@ -774,7 +1603,7 @@
 })();
 </script>
 
-<script src="app.js?v=20261026-weight3"></script>
+<script src="app.js?v=20261029-ohlc1"></script>
 
 <script>
 /* ════════════════════════════════════════════════════════════════
@@ -917,7 +1746,7 @@
   function setSidebarCollapsed(closed) {
     document.body.classList.toggle('sidebar-collapsed', closed);
     var icon = sidebarToggle.querySelector('use');
-    if (icon) icon.setAttribute('href', closed ? '#i-panel-left' : '#i-panel-left-close');
+    if (icon) icon.setAttribute('href', closed ? '#i-panel-left-open' : '#i-panel-left-close');
     sidebarToggle.setAttribute('aria-label', closed ? '展开配置面板' : '折叠配置面板');
     sidebarToggle.setAttribute('aria-expanded', String(!closed));
     sidebarToggle.title = closed ? '展开配置面板' : '折叠配置面板';
@@ -1150,9 +1979,10 @@
   })();
 
   /* ── 图表视图分段控制（aria-pressed 反映当前视图） ── */
-  Array.prototype.slice.call(document.querySelectorAll('.seg-btn')).forEach(function (btn) {
+  /* 只绑定带 data-view 的按钮：K 线周期按钮共用 seg-btn 外观，由视图脚本自理 */
+  Array.prototype.slice.call(document.querySelectorAll('.seg-btn[data-view]')).forEach(function (btn) {
     btn.addEventListener('click', function () {
-      Array.prototype.slice.call(document.querySelectorAll('.seg-btn')).forEach(function (b) {
+      Array.prototype.slice.call(document.querySelectorAll('.seg-btn[data-view]')).forEach(function (b) {
         var active = b === btn;
         b.classList.toggle('active', active);
         b.setAttribute('aria-pressed', String(active));
